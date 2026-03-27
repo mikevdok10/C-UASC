@@ -1,8 +1,5 @@
 
 from picamera2 import Picamera2 
-from picamera2.encoders import MJPEGEncoder
-import time 
-
 
 import cv2 
 
