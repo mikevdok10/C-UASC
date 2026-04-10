@@ -1,7 +1,11 @@
 
 from picamera2 import Picamera2 
-
 import cv2 
+from yolo import YOLO 
+
+model = YOLO("yolov8m.pt")
+
+
 
 camera = Picamera2()
 
