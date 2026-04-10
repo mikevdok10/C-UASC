@@ -37,8 +37,6 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
         
-# peta hay did this
-
 
 camera.stop()
 cv2.destroyAllWindows()
