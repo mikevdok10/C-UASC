@@ -3,7 +3,7 @@ import picamera2
 from ultralytics import YOLO 
 import cv2
 import numpy as np # computes image arrays of pixels 
-model = YOLO("yolov8n_ncnn_model")  # Load the YOLOv8n model
+model = YOLO("runs/detect/train/weights/best_ncnn_model")  # Load the YOLOv8n model
 import io
 from flask import Flask, Response
 
@@ -15,12 +15,12 @@ camera = Picamera2()
 camera.configure(camera.create_still_configuration())
 camera.start()
 
-cap = cv2.VideoCapture(0)
+
 
 while True: 
     frame = camera.capture_array() # takes image and stores as an array of pixels
     frame = np.ascontiguousarray(frame, dtype=np.uint8) # conver to format that yolo can work with 
-    detectedObjects = model(frame) # returns frame of detected objects 
+    detectedObjects = model(frame, conf=0.5) # returns frame of detected objects 
 
     labeled_frame = detectedObjects[0].plot() # this takes the first detection and puts the labels on it 
             
