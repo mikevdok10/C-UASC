@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 11
+names: ['bullseye', 'target0', 'target1', 'target2', 'target3', 'target4', 'target5', 'target6', 'target7', 'target8', 'target9']
+
+roboflow:
+  workspace: peters-workspace-8qjad
+  project: cuascprototype3
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/peters-workspace-8qjad/cuascprototype3/dataset/2

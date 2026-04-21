@@ -7,7 +7,7 @@ names: ['target1']
 
 roboflow:
   workspace: peters-workspace-8qjad
-  project: cuasc
-  version: 4
+  project: cuasc_prototype_2
+  version: 2
   license: CC BY 4.0
-  url: https://universe.roboflow.com/peters-workspace-8qjad/cuasc/dataset/4
+  url: https://universe.roboflow.com/peters-workspace-8qjad/cuasc_prototype_2/dataset/2

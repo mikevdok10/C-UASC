@@ -1,5 +1,5 @@
-# CUASC > 2026-04-10 4:09pm
-https://universe.roboflow.com/peters-workspace-8qjad/cuasc
+# CUASC_Prototype_2 > Test1
+https://universe.roboflow.com/peters-workspace-8qjad/cuasc_prototype_2
 
 Provided by a Roboflow user
 License: CC BY 4.0
