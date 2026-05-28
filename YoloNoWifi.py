@@ -7,12 +7,32 @@ from pymavlink import mavutil
 from gpiozero import AngularServo
 from time import sleep, time
 import threading 
-
+from queue import Queue
 
 AUTO_MODE = 0
 servo_busy = False
 last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
+mavlink_lock = threading.Lock()
+ 
+class Waypoint: 
+    def __init__(self, latitude, longitude, altitude):
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+ 
+
+
+
+dronePoisition = {
+
+    
+    "latitude": None, 
+    "longitude": None,
+    "altitude": None
+}
+
+
 
 
 camera = Picamera2()
@@ -49,7 +69,11 @@ def mavlink_loop():
 
     #opens a serial UART connection between the pixhawk and the raspberry pi 
     global master   
-    master = mavutil.mavlink_connection('/dev/ttyAMA0', baud=57600)
+    global last_trigger_time
+    global servo_busy
+    global dronePoisition
+    master = mavutil.mavlink_connection('/dev/ttyACM0', baud=57600)
+
 
     # this bit just confirsms that the connection is active 
     print("Waiting for heartbeat...")
@@ -62,61 +86,105 @@ def mavlink_loop():
         master.target_component,
         mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS, 10,1
     )
+    master.mav.request_data_stream_send(
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_DATA_STREAM_POSITION, 10,1,
+       
+    )
     
     print("looking for switch inputs")
     
     requestedMode = 0
     while True:
+        try:
+            with mavlink_lock:
+                msg = master.recv_match(blocking=False)
+            if msg is None:
+                continue
+            msg_type = msg.get_type()
+        except Exception as e:
+            print(f"MAVLink error: {e}, reconnecting...")
+            sleep(2)
+            with mavlink_lock:
+                master = mavutil.mavlink_connection('/dev/ttyAMA0', baud=57600)
+                master.wait_heartbeat()
+            print("Reconnected")
 
-
-        msg = master.recv_match(type='RC_CHANNELS', blocking=True)
-
-        if msg is None:
-            continue
-
-        global AUTO_MODE
-        remoteControl5 = msg.chan5_raw #SA
-        remoteControl6 = msg.chan6_raw #SC
-
-        print(
-            f"CH5 = {msg.chan5_raw},"
-            f"CH6 = {msg.chan6_raw}"
-        )
-
-        #checks to see switch position, numbers represent up, down, middle 
-
-        if remoteControl6 > 1500:
-            requestedMode = 3
-           
+         
         
-        else:
-            if remoteControl5 < 1300:
-                requestedMode = 0
-                
-            elif remoteControl5 < 1700:
-                requestedMode = 1
-               
-            else:
-                requestedMode = 2
-                
-
-        if requestedMode == 0:
-            AUTO_MODE = 0
-        elif AUTO_MODE == 0:
-            AUTO_MODE = requestedMode
-        else: 
-            pass
+        if msg_type == "GLOBAL_POSITION_INT":
+            with mavlink_lock:
+                dronePoisition["latitude"] = msg.lat / 1e7
+                dronePoisition["longitude"] = msg.lon / 1e7
+                dronePoisition["altitude"] = msg.alt / 1000.0
+            print(
+            f"Current Position: lat={dronePoisition['latitude']}," 
+            f"  lon={dronePoisition['longitude']}, "
+            f"alt={dronePoisition['altitude']}"
+            )
+            print("------------------------------------")
         
-        if AUTO_MODE == 0:
-            print("Manual Mode")
-        elif AUTO_MODE == 1:
-            print("Target Drop")
-        elif AUTO_MODE == 2:
-            print("Waypoint Navigation")
-        elif AUTO_MODE == 3:
-            print("Target Localization")
 
-        print("-----------------------------")
+        elif msg_type == "RC_CHANNELS":
+            with mavlink_lock:
+                global AUTO_MODE
+                remoteControl5 = msg.chan5_raw #SA
+                remoteControl6 = msg.chan6_raw #SC
+                manualDrop = msg.chan7_raw #SD
+                print(
+                    f"CH5 = {msg.chan5_raw},"
+                    f"CH6 = {msg.chan6_raw},"
+                    f"CH7 = {msg.chan7_raw}"
+                )
+
+
+                if manualDrop > 1800:
+                    current_time = time()
+
+                    if current_time - last_trigger_time > TRIGGER_COOLDOWN:
+                        last_trigger_time = current_time
+
+                        if not servo_busy:
+                            servo_busy = True
+                            threading.Thread(target=drop_payload, daemon=True).start()
+
+                #checks to see switch position, numbers represent up, down, middle 
+                if remoteControl6 > 1900:
+                    requestedMode = 4 #Waypoint Navigation 
+                elif remoteControl6 > 1400:
+                    requestedMode = 3 # Target Localization
+                
+                else:
+                    if remoteControl5 < 1300:
+                        requestedMode = 0 #Manual Mode
+                        
+                    elif remoteControl5 < 1700:
+                        requestedMode = 1 #Target Drop
+                    
+                    else:
+                        requestedMode = 2 #Waypoint Navigation
+                        
+                if requestedMode == 0:
+                    AUTO_MODE = 0
+                elif AUTO_MODE == 0:
+                    AUTO_MODE = requestedMode
+                else: 
+                    pass
+                
+                if AUTO_MODE == 0:
+                    print("Manual Mode")
+                elif AUTO_MODE == 1:
+                    print("Target Drop")
+                elif AUTO_MODE == 2:
+                    print("Package Delivery")
+                elif AUTO_MODE == 3:
+                    print("Target Localization")
+                elif AUTO_MODE == 4:
+                    print("Waypoint Navigation")
+
+                print("************************************")
+
         
             
                 
@@ -124,26 +192,27 @@ def mavlink_loop():
 def drop_payload():
     #spins servo to open, then closes, keeps track of whether or not it is busy 
     global servo_busy
-    global master
     if not master:
         print("MAVLink connection not established.")
         return  
     print ("dropping payload")
-    trigger_servo(master, channel=8, pwm=1900)
+    trigger_servo(master, channel=9, pwm=1200)
     sleep(1)
-    trigger_servo(master, channel=8, pwm=1100) 
+    print("closing servo")
+    trigger_servo(master, channel=9, pwm=600) 
     servo_busy = False # reset position
 
-def trigger_servo(master, channel=8, pwm=1900):
-    master.mav.command_long_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-        0,
-        channel,
-        pwm,
-        0, 0, 0, 0, 0
-    )            
+def trigger_servo(master, channel=9, pwm=1400):
+    with mavlink_lock:
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+            0,
+            channel,
+            pwm,
+            0, 0, 0, 0, 0
+        )
 
             
 
@@ -195,11 +264,11 @@ def detection_loop():
             
         
         # runs the different autonomous routines 
-        if AUTO_MODE == 0:
+        if AUTO_MODE == 0: #Manual Mode 
             sleep(0.1)
             continue
 
-        elif AUTO_MODE == 1:
+        elif AUTO_MODE == 1: # Target Drop 
 
             frame = camera.capture_array()
 
@@ -253,15 +322,72 @@ def detection_loop():
                             servo_busy = True
                             threading.Thread(target=drop_payload, daemon=True).start() # reset position
 
-                print(f"[DETECTION] {class_name} ({confidence:.2f}) bbox=({x1},{y1},{x2},{y2})")
+                    print(f"[DETECTION] {class_name} ({confidence:.2f}) bbox=({x1},{y1},{x2},{y2})")
 
             sleep(0.05)
 
-        elif AUTO_MODE == 2:
+        elif AUTO_MODE == 2: # Package Delivery 
+
+            frame = camera.capture_array()
+
+                #camera settings are wierd, color correct before running detection 
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = zoom_frame(frame, zoom_factor=2.0)
+            frame = np.ascontiguousarray(frame, dtype=np.uint8)
+
+                # Run detector on the first frame that comes in 
+            detected_objects = detector(frame, conf=0.4, verbose=False)
+
+            labeled_frame = frame.copy()
+
+            for box in detected_objects[0].boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                # Gets the bounding boxes coordinates
+                h, w = frame.shape[:2]
+                x1 = max(0, min(x1, w - 1))
+                x2 = max(0, min(x2, w - 1))
+                y1 = max(0, min(y1, h - 1))
+                y2 = max(0, min(y2, h - 1))
+
+                    #this part checks to make sure the bounding box is real
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                crop = frame[y1:y2, x1:x2]
+
+                if crop.size == 0:
+                    continue
+
+                    #This runs the calssification yolo model on the CROPPED frame 
+                    #returns a confidence value, and alos assings a bounding box, as well as a label
+                class_results = classifier(crop, imgsz=224, verbose=False)
+
+                class_name, confidence = get_classifier_label(class_results)
+
+                label = f"{class_name}: {confidence:.2f}"
+                
+
+                if class_name == "Bullseye" and confidence > 0.8:
+                    current_time = time() 
+                    
+                    if current_time - last_trigger_time > TRIGGER_COOLDOWN:
+                        last_trigger_time = current_time
+                        if not servo_busy:
+                            servo_busy = True
+                            threading.Thread(target=drop_payload, daemon=True).start() # reset position
+
+                    print(f"[DETECTION] {class_name} ({confidence:.2f}) bbox=({x1},{y1},{x2},{y2})")
             
-            sleep(0.1)
-        elif AUTO_MODE == 3:
+            sleep(0.05)
+        elif AUTO_MODE == 3: # Target Localization
            
+            sleep(0.1)
+        elif AUTO_MODE == 4: # Waypoint Navigation 
+            
             sleep(0.1)
 
 #this allows the mavlink to recieve data while also running our autonomous routine so that we can switch to manual if necessary. 
