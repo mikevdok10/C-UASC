@@ -131,11 +131,13 @@ def mavlink_loop():
                 global AUTO_MODE
                 remoteControl5 = msg.chan5_raw #SA
                 remoteControl6 = msg.chan6_raw #SC
+                flgihtModeSwitch = msg.chan8_raw #SB
                 manualDrop = msg.chan7_raw #SD
                 print(
                     f"CH5 = {msg.chan5_raw},"
                     f"CH6 = {msg.chan6_raw},"
                     f"CH7 = {msg.chan7_raw}"
+                    f"CH8 = {msg.chan8_raw}"
                 )
 
 
@@ -148,42 +150,65 @@ def mavlink_loop():
                         if not servo_busy:
                             servo_busy = True
                             threading.Thread(target=drop_payload, daemon=True).start()
+                if flgihtModeSwitch < 1300:
+                    master.mav.command_long_send(
+                        master.target_system,
+                        master.target_component,
+                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                        5
+                    )
+                elif flgihtModeSwitch > 1700:
+                    master.mav.command_long_send(
+                        master.target_system,
+                        master.target_component,
+                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                        4
+                    )
 
-                #checks to see switch position, numbers represent up, down, middle 
-                if remoteControl6 > 1900:
-                    requestedMode = 4 #Waypoint Navigation 
-                elif remoteControl6 > 1400:
-                    requestedMode = 3 # Target Localization
-                
-                else:
-                    if remoteControl5 < 1300:
-                        requestedMode = 0 #Manual Mode
-                        
-                    elif remoteControl5 < 1700:
-                        requestedMode = 1 #Target Drop
+                    if remoteControl6 > 1900:
+                        requestedMode = 4 #Waypoint Navigation 
+                    elif remoteControl6 > 1400:
+                        requestedMode = 3 # Target Localization
                     
                     else:
-                        requestedMode = 2 #Waypoint Navigation
+                        if remoteControl5 < 1300:
+                            requestedMode = 0 #Manual Mode
+                            
+                        elif remoteControl5 < 1700:
+                            requestedMode = 1 #Target Drop
                         
-                if requestedMode == 0:
-                    AUTO_MODE = 0
-                elif AUTO_MODE == 0:
-                    AUTO_MODE = requestedMode
-                else: 
-                    pass
-                
-                if AUTO_MODE == 0:
-                    print("Manual Mode")
-                elif AUTO_MODE == 1:
-                    print("Target Drop")
-                elif AUTO_MODE == 2:
-                    print("Package Delivery")
-                elif AUTO_MODE == 3:
-                    print("Target Localization")
-                elif AUTO_MODE == 4:
-                    print("Waypoint Navigation")
+                        else:
+                            requestedMode = 2 #Waypoint Navigation
+                            
+                    if requestedMode == 0:
+                        AUTO_MODE = 0
+                    elif AUTO_MODE == 0:
+                        AUTO_MODE = requestedMode
+                    else: 
+                        pass
+                    
+                    if AUTO_MODE == 0:
+                        print("Manual Mode")
+                    elif AUTO_MODE == 1:
+                        print("Target Drop")
+                    elif AUTO_MODE == 2:
+                        print("Package Delivery")
+                    elif AUTO_MODE == 3:
+                        print("Target Localization")
+                    elif AUTO_MODE == 4:
+                        print("Waypoint Navigation")
 
-                print("************************************")
+                    print("************************************")
+                    
+                else:
+                    master.mav.command_long_send(
+                        master.target_system,
+                        master.target_component,
+                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                        6
+                    )
+                #checks to see switch position, numbers represent up, down, middle 
+                    
 
         
             
