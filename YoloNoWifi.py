@@ -80,22 +80,18 @@ def mavlink_loop():
     master.wait_heartbeat()
     print("Its alive....")
 
-    #requests data from switches @ 10Hz
     master.mav.request_data_stream_send(
         master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS, 10,1
-    )
-    master.mav.request_data_stream_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_DATA_STREAM_POSITION, 10,1,
-       
+        master.target_component, 
+        mavutil.mavlink.MAV_DATA_STREAM_ALL,
+        10, #10Hz update rate
+        1
     )
     
-    print("looking for switch inputs")
+    
     
     requestedMode = 0
+
     while True:
         try:
             with mavlink_lock:
@@ -103,16 +99,15 @@ def mavlink_loop():
             if msg is None:
                 continue
             msg_type = msg.get_type()
+
         except Exception as e:
             print(f"MAVLink error: {e}, reconnecting...")
             sleep(2)
             with mavlink_lock:
-                master = mavutil.mavlink_connection('/dev/ttyAMA0', baud=57600)
+                master = mavutil.mavlink_connection('/dev/ttyACM0', baud=57600)
                 master.wait_heartbeat()
             print("Reconnected")
 
-         
-        
         if msg_type == "GLOBAL_POSITION_INT":
             with mavlink_lock:
                 dronePoisition["latitude"] = msg.lat / 1e7
@@ -124,6 +119,8 @@ def mavlink_loop():
             f"alt={dronePoisition['altitude']}"
             )
             print("------------------------------------")
+        if msg_type == "HEARTBEAT":
+            print(mavutil.mode_string_v10(msg))
         
 
         elif msg_type == "RC_CHANNELS":
@@ -150,19 +147,20 @@ def mavlink_loop():
                         if not servo_busy:
                             servo_busy = True
                             threading.Thread(target=drop_payload, daemon=True).start()
-                if flgihtModeSwitch < 1300:
+                if flgihtModeSwitch < 1230:
                     master.mav.command_long_send(
+                    
                         master.target_system,
                         master.target_component,
                         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                        5
+                        5, 0, 0, 0, 0, 0, 0, 0
                     )
-                elif flgihtModeSwitch > 1700:
+                elif flgihtModeSwitch > 1230:
                     master.mav.command_long_send(
                         master.target_system,
                         master.target_component,
                         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                        4
+                        1, 0, 0, 0, 0, 0, 0, 0
                     )
 
                     if remoteControl6 > 1900:
@@ -205,7 +203,7 @@ def mavlink_loop():
                         master.target_system,
                         master.target_component,
                         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                        6
+                        6, 0, 0, 0, 0, 0, 0, 0
                     )
                 #checks to see switch position, numbers represent up, down, middle 
                     
