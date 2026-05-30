@@ -15,20 +15,21 @@ last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
 mavlink_lock = threading.Lock()
  
+# Used for defining waypoints, to be used for Waypoint Nav mode
 class Waypoint: 
     def __init__(self, latitude, longitude, altitude):
         self.latitude = latitude
         self.longitude = longitude
         self.altitude = altitude
  
-
-dronePoisition = {
+# Current drone pos to be updated by mavlink loop, used for autonomous routines to make decisions based on current location, also printed out for debugging purposes
+dronePosition = {
     "latitude": None, 
     "longitude": None,
     "altitude": None
 }
 
-
+# Initialize camera and YOLO models
 camera = Picamera2()
 camera.configure(camera.create_preview_configuration())
 camera.start()
@@ -39,6 +40,7 @@ detector = YOLO('/home/bc/C-UASC/complete_detector_runs/detect/train2/weights/be
 # Classification model to distinguish between the targets
 classifier = YOLO('complete_classifier_runs/classify/train/weights/best_ncnn_model')
 
+# Zooms on frame
 def zoom_frame(frame, zoom_factor=2.0):
     h, w, _ = frame.shape
 
@@ -59,21 +61,23 @@ def zoom_frame(frame, zoom_factor=2.0):
 
     return zoomed
 
+# Main loop to handle MAVLink communication, runs in a separate thread to allow for simultaneous autonomous routines and manual control
 def mavlink_loop():
 
     # Opens a serial UART connection between the pixhawk and the raspberry pi 
     global master   
     global last_trigger_time
     global servo_busy
-    global dronePoisition
+    global dronePosition
     master = mavutil.mavlink_connection('/dev/ttyACM0', baud=57600)
-
 
     # Confirms that the connection is active 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
     print("Its alive....")
 
+    # Requests pixhawk to send position data + state of the remote control switches
+    # Used to make decisions in autonomous routines + switch between manual and autonomous
     master.mav.request_data_stream_send(
         master.target_system,
         master.target_component, 
@@ -82,9 +86,9 @@ def mavlink_loop():
         1
     )
     
-    
     requestedMode = 0
 
+    # Main loop to handle incoming MAVLink messages, updates drone position, checks switch states, and triggers payload drop
     while True:
         try:
             with mavlink_lock:
@@ -103,13 +107,13 @@ def mavlink_loop():
 
         if msg_type == "GLOBAL_POSITION_INT":
             with mavlink_lock:
-                dronePoisition["latitude"] = msg.lat / 1e7
-                dronePoisition["longitude"] = msg.lon / 1e7
-                dronePoisition["altitude"] = msg.alt / 1000.0
+                dronePosition["latitude"] = msg.lat / 1e7
+                dronePosition["longitude"] = msg.lon / 1e7
+                dronePosition["altitude"] = msg.alt / 1000.0
             print(
-            f"Current Position: lat={dronePoisition['latitude']}," 
-            f"  lon={dronePoisition['longitude']}, "
-            f"alt={dronePoisition['altitude']}"
+            f"Current Position: lat={dronePosition['latitude']}," 
+            f"  lon={dronePosition['longitude']}, "
+            f"alt={dronePosition['altitude']}"
             )
             print("------------------------------------")
         if msg_type == "HEARTBEAT":
@@ -121,7 +125,7 @@ def mavlink_loop():
                 global AUTO_MODE
                 remoteControl5 = msg.chan5_raw #SA
                 remoteControl6 = msg.chan6_raw #SC
-                flgihtModeSwitch = msg.chan8_raw #SB
+                flightModeSwitch = msg.chan8_raw #SB
                 manualDrop = msg.chan7_raw #SD
                 print(
                     f"CH5 = {msg.chan5_raw},"
@@ -130,7 +134,8 @@ def mavlink_loop():
                     f"CH8 = {msg.chan8_raw}"
                 )
 
-
+                # Checks to see if the payload drop switch is toggled; If it is + servo is not currently busy + cooldown time has passed
+                # Then triggers the payload drop function in a separate thread to not block the main loop
                 if manualDrop > 1800:
                     current_time = time()
 
@@ -140,7 +145,7 @@ def mavlink_loop():
                         if not servo_busy:
                             servo_busy = True
                             threading.Thread(target=drop_payload, daemon=True).start()
-                if flgihtModeSwitch < 1230:
+                if flightModeSwitch < 1230:
                     master.mav.command_long_send(
                     
                         master.target_system,
@@ -148,7 +153,7 @@ def mavlink_loop():
                         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                         5, 0, 0, 0, 0, 0, 0, 0
                     )
-                elif flgihtModeSwitch > 1230:
+                elif flightModeSwitch > 1230:
                     master.mav.command_long_send(
                         master.target_system,
                         master.target_component,
