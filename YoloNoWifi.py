@@ -22,27 +22,21 @@ class Waypoint:
         self.altitude = altitude
  
 
-
-
 dronePoisition = {
-
-    
     "latitude": None, 
     "longitude": None,
     "altitude": None
 }
 
 
-
-
 camera = Picamera2()
 camera.configure(camera.create_preview_configuration())
 camera.start()
 
-#detector for the preliminary target detectiopn (trained on the blank target) 
+# Detector for the preliminary target detection (trained on the blank target) 
 detector = YOLO('/home/bc/C-UASC/complete_detector_runs/detect/train2/weights/best_ncnn_model')
 
-# classification model to distinguish between the targets
+# Classification model to distinguish between the targets
 classifier = YOLO('complete_classifier_runs/classify/train/weights/best_ncnn_model')
 
 def zoom_frame(frame, zoom_factor=2.0):
@@ -67,7 +61,7 @@ def zoom_frame(frame, zoom_factor=2.0):
 
 def mavlink_loop():
 
-    #opens a serial UART connection between the pixhawk and the raspberry pi 
+    # Opens a serial UART connection between the pixhawk and the raspberry pi 
     global master   
     global last_trigger_time
     global servo_busy
@@ -75,7 +69,7 @@ def mavlink_loop():
     master = mavutil.mavlink_connection('/dev/ttyACM0', baud=57600)
 
 
-    # this bit just confirsms that the connection is active 
+    # Confirms that the connection is active 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
     print("Its alive....")
