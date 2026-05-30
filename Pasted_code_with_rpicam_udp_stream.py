@@ -7,6 +7,9 @@ from pymavlink import mavutil
 from gpiozero import AngularServo
 from time import sleep, time
 import threading 
+import subprocess
+import atexit
+import signal
 from queue import Queue
 
 AUTO_MODE = 0
@@ -14,6 +17,111 @@ servo_busy = False
 last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
 mavlink_lock = threading.Lock()
+
+# ---------------- VIDEO STREAM SETTINGS ----------------
+# This matches:
+# rpicam-vid -t 0 --inline --codec h264 --width 640 --height 480 --framerate 30
+# --bitrate 1000000 --libav-format mpegts -o udp://192.168.137.1:5600
+#
+# IMPORTANT:
+# rpicam-vid and Picamera2 normally cannot use the same Raspberry Pi camera at the
+# same time. If your YOLO detection is using Picamera2, this direct rpicam-vid
+# subprocess may fail with a "camera busy" error. Use this when you want a direct
+# camera stream, or switch to an FFmpeg/Picamera2 frame pipeline for simultaneous
+# detection + streaming.
+ENABLE_RPICAM_UDP_STREAM = True
+STREAM_IP = "192.168.137.1"   # ground-station computer IP
+STREAM_PORT = 5600
+STREAM_WIDTH = 640
+STREAM_HEIGHT = 480
+STREAM_FRAMERATE = 30
+STREAM_BITRATE = 1000000
+
+video_stream_process = None
+
+def start_rpicam_udp_stream():
+    """
+    Starts a UDP H.264 MPEG-TS video stream using rpicam-vid.
+
+    Ground station examples:
+    - Mission Planner / QGroundControl UDP port: 5600
+    - VLC: udp://@:5600
+    """
+    global video_stream_process
+
+    if not ENABLE_RPICAM_UDP_STREAM:
+        print("[VIDEO] UDP stream disabled.")
+        return None
+
+    cmd = [
+        "rpicam-vid",
+        "-t", "0",
+        "--inline",
+        "--codec", "h264",
+        "--width", str(STREAM_WIDTH),
+        "--height", str(STREAM_HEIGHT),
+        "--framerate", str(STREAM_FRAMERATE),
+        "--bitrate", str(STREAM_BITRATE),
+        "--libav-format", "mpegts",
+        "-o", f"udp://{STREAM_IP}:{STREAM_PORT}",
+    ]
+
+    try:
+        print("[VIDEO] Starting UDP video stream:")
+        print(" ".join(cmd))
+
+        video_stream_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            preexec_fn=None
+        )
+
+        # Give rpicam-vid a moment to fail if the camera is already busy/missing.
+        sleep(0.5)
+
+        if video_stream_process.poll() is not None:
+            error_output = video_stream_process.stderr.read()
+            print("[VIDEO] rpicam-vid failed to start.")
+            print(error_output)
+            video_stream_process = None
+            return None
+
+        print(f"[VIDEO] Streaming to udp://{STREAM_IP}:{STREAM_PORT}")
+        return video_stream_process
+
+    except FileNotFoundError:
+        print("[VIDEO] rpicam-vid was not found. Install/update Raspberry Pi camera apps.")
+        video_stream_process = None
+        return None
+    except Exception as e:
+        print(f"[VIDEO] Failed to start video stream: {e}")
+        video_stream_process = None
+        return None
+
+
+def stop_rpicam_udp_stream():
+    """Stops the rpicam-vid process cleanly when the Python program exits."""
+    global video_stream_process
+
+    if video_stream_process is None:
+        return
+
+    if video_stream_process.poll() is None:
+        print("[VIDEO] Stopping UDP video stream...")
+        video_stream_process.terminate()
+
+        try:
+            video_stream_process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            video_stream_process.kill()
+
+    video_stream_process = None
+
+atexit.register(stop_rpicam_udp_stream)
+# -------------------------------------------------------
+
  
 class Waypoint: 
     def __init__(self, latitude, longitude, altitude):
@@ -284,28 +392,25 @@ def detection_loop():
             elif AUTO_MODE == 3:
                 print("Target Localization")
 
-
-
             
-        # AUTONOMOUS ROUTINES
         
-        # 0 - Manual Mode 
-        if AUTO_MODE == 0: 
+        # runs the different autonomous routines 
+        if AUTO_MODE == 0: #Manual Mode 
             sleep(0.1)
             continue
 
-        # 1 - Target Drop   
-        elif AUTO_MODE == 1:
+        elif AUTO_MODE == 1: # Target Drop 
 
             frame = camera.capture_array()
 
-            # Color correction
+                #camera settings are wierd, color correct before running detection 
+
             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             frame = zoom_frame(frame, zoom_factor=2.0)
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
-            # Run detector on the first frame that comes in 
+                # Run detector on the first frame that comes in 
             detected_objects = detector(frame, conf=0.4, verbose=False)
 
             labeled_frame = frame.copy()
@@ -320,7 +425,8 @@ def detection_loop():
                 y1 = max(0, min(y1, h - 1))
                 y2 = max(0, min(y2, h - 1))
 
-                # Checks to make sure the bounding box is real
+                    #this part checks to make sure the bounding box is real
+
                 if x2 <= x1 or y2 <= y1:
                     continue
 
@@ -329,8 +435,8 @@ def detection_loop():
                 if crop.size == 0:
                     continue
 
-                # This runs the classification yolo model on the CROPPED frame 
-                # Returns a confidence value, and alos assings a bounding box, as well as a label
+                    #This runs the calssification yolo model on the CROPPED frame 
+                    #returns a confidence value, and alos assings a bounding box, as well as a label
                 class_results = classifier(crop, imgsz=224, verbose=False)
 
                 class_name, confidence = get_classifier_label(class_results)
@@ -351,19 +457,18 @@ def detection_loop():
 
             sleep(0.05)
 
-        # 2 - Package Delivery 
-        elif AUTO_MODE == 2: 
+        elif AUTO_MODE == 2: # Package Delivery 
 
             frame = camera.capture_array()
 
-            # Color correction (again)
-            # Lots of copy pasted code from the previous mode, needs to be cleaned up
+                #camera settings are wierd, color correct before running detection 
+
             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             frame = zoom_frame(frame, zoom_factor=2.0)
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
-            # Run detector on the first frame that comes in 
+                # Run detector on the first frame that comes in 
             detected_objects = detector(frame, conf=0.4, verbose=False)
 
             labeled_frame = frame.copy()
@@ -378,7 +483,8 @@ def detection_loop():
                 y1 = max(0, min(y1, h - 1))
                 y2 = max(0, min(y2, h - 1))
 
-                # This part checks to make sure the bounding box is real
+                    #this part checks to make sure the bounding box is real
+
                 if x2 <= x1 or y2 <= y1:
                     continue
 
@@ -387,8 +493,8 @@ def detection_loop():
                 if crop.size == 0:
                     continue
 
-                # This runs the classification yolo model on the CROPPED frame 
-                # Returns a confidence value, and alos assings a bounding box, as well as a label
+                    #This runs the calssification yolo model on the CROPPED frame 
+                    #returns a confidence value, and alos assings a bounding box, as well as a label
                 class_results = classifier(crop, imgsz=224, verbose=False)
 
                 class_name, confidence = get_classifier_label(class_results)
@@ -408,18 +514,21 @@ def detection_loop():
                     print(f"[DETECTION] {class_name} ({confidence:.2f}) bbox=({x1},{y1},{x2},{y2})")
             
             sleep(0.05)
-
-        # 3 - Target Localization
-        elif AUTO_MODE == 3: 
+        elif AUTO_MODE == 3: # Target Localization
            
             sleep(0.1)
-
-        # 4 - Waypoint Navigation
-        elif AUTO_MODE == 4: 
+        elif AUTO_MODE == 4: # Waypoint Navigation 
             
             sleep(0.1)
 
-# Allows the mavlink to recieve data while also running  autonomous routine so that we can switch to manual if necessary
+#this allows the mavlink to recieve data while also running our autonomous routine so that we can switch to manual if necessary. 
 if __name__ == '__main__':
-    threading.Thread(target=mavlink_loop, daemon=True).start()
-    detection_loop()
+    start_rpicam_udp_stream()
+
+    try:
+        threading.Thread(target=mavlink_loop, daemon=True).start()
+        detection_loop()
+    except KeyboardInterrupt:
+        print("\n[MAIN] Keyboard interrupt received. Exiting...")
+    finally:
+        stop_rpicam_udp_stream()
