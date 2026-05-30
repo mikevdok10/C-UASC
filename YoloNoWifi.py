@@ -83,7 +83,6 @@ def mavlink_loop():
     )
     
     
-    
     requestedMode = 0
 
     while True:
@@ -200,21 +199,21 @@ def mavlink_loop():
                         6, 0, 0, 0, 0, 0, 0, 0
                     )
                 #checks to see switch position, numbers represent up, down, middle 
-                    
 
-        
-            
-                
+
 
 def drop_payload():
-    #spins servo to open, then closes, keeps track of whether or not it is busy 
+    # Spins servo to open, then closes, keeps track of whether or not it is busy 
     global servo_busy
+
     if not master:
         print("MAVLink connection not established.")
         return  
+    
     print ("dropping payload")
     trigger_servo(master, channel=9, pwm=1200)
     sleep(1)
+
     print("closing servo")
     trigger_servo(master, channel=9, pwm=600) 
     servo_busy = False # reset position
@@ -235,12 +234,12 @@ def trigger_servo(master, channel=9, pwm=1400):
 
 def get_classifier_label(class_results):
 
-    #gets the probabilities and class names from the classifier results
+    # Gets the probabilities and class names from the classifier results
     probs = class_results[0].probs
     names = class_results[0].names
 
     # Convert NCNN output to normal NumPy array
-    #NCNN is a faster format made for running YOLO on chud devices like our PI but it needs to be converted back to a normal format for processing
+    # NCNN is a faster format made for running YOLO on chud devices like our Pi but it needs to be converted back to a normal format for processing
     prob_data = probs.data
 
     try:
@@ -263,7 +262,7 @@ def detection_loop():
     global servo_busy
     global last_trigger_time
 
-    #prints out current mode, only print if the mode has changed 
+    # Prints out current mode, only print if the mode has changed 
     while True:
 
         if AUTO_MODE != last_mode:
@@ -278,10 +277,8 @@ def detection_loop():
             elif AUTO_MODE == 3:
                 print("Target Localization")
 
-
-
             
-        # AUTONOMOUS ROUTINES
+        # ---------< AUTONOMOUS ROUTINES >----------
         
         # 0 - Manual Mode 
         if AUTO_MODE == 0: 
