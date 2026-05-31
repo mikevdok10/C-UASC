@@ -12,6 +12,8 @@ import math
 
 AUTO_MODE = 0
 
+master = None
+
 AUTO_MODE_NAMES = {
     0: "Manual",
     1: "Target Drop",
@@ -21,7 +23,7 @@ AUTO_MODE_NAMES = {
 }
 
 COPTER_MODES = {
-    "Stabalize":0,
+    "STABILIZE":0,
     "ALTHOLD":2,
     "AUTO":3,
     "GUIDED":4,
@@ -42,20 +44,132 @@ class Waypoint:
         self.altitude = altitude
  
 PACKAGE_DELIVERY_WAYPOINTS = [
-    Waypoint(37.7749, -122.4194, SEARCH_ALTITUDE),  # Example waypoint 1
-    Waypoint(37.7750, -122.4180, SEARCH_ALTITUDE),  # Example waypoint 2
-    Waypoint(37.7755, -122.4170, SEARCH_ALTITUDE)   # Example waypoint 3
+    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Example waypoint 1
+    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Example waypoint 2
+    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE)   # Example waypoint 3
 ]
 
 NAV_WAYPOINTS = [
-    Waypoint(37.7749, -122.4194, SEARCH_ALTITUDE),  # Example waypoint 1
-    Waypoint(37.7750, -122.4180, SEARCH_ALTITUDE),  # Example waypoint 2
-    Waypoint(37.7755, -122.4170, SEARCH_ALTITUDE)   # Example waypoint 3
+    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Waypoint 1
+    Waypoint(35.409000, -118.971900, SEARCH_ALTITUDE),  # Waypoint 2
+    Waypoint(35.408500, -118.971500, SEARCH_ALTITUDE),  # Waypoint 3
+    Waypoint(35.408000, -118.971000, SEARCH_ALTITUDE),  # Waypoint 4
+    Waypoint(35.407500, -118.970500, SEARCH_ALTITUDE),  # Waypoint 5
+    Waypoint(35.407000, -118.970000, SEARCH_ALTITUDE),  # Waypoint 6
+    Waypoint(35.406500, -118.969500, SEARCH_ALTITUDE),  # Waypoint 7
 ]
 
+def get_polygon_origin(polygon_latlon):
+    """Uses the average polygon center as the local XY origin."""
+    avg_lat = sum(p[0] for p in polygon_latlon) / len(polygon_latlon)
+    avg_lon = sum(p[1] for p in polygon_latlon) / len(polygon_latlon)
+    return avg_lat, avg_lon
 
 
-dronePoisition = {
+def latlon_to_xy(lat, lon, origin_lat, origin_lon):
+    """
+    Converts lat/lon to local x/y meters.
+    x = east/west meters
+    y = north/south meters
+    """
+    x = (lon - origin_lon) * 111320.0 * math.cos(math.radians(origin_lat))
+    y = (lat - origin_lat) * 111320.0
+    return x, y
+
+
+def xy_to_latlon(x, y, origin_lat, origin_lon):
+    """Converts local x/y meters back to lat/lon."""
+    lat = origin_lat + (y / 111320.0)
+    lon = origin_lon + (x / (111320.0 * math.cos(math.radians(origin_lat))))
+    return lat, lon
+
+
+def polygon_to_xy(polygon_latlon, origin_lat, origin_lon):
+    """Converts a polygon from lat/lon to local x/y meters."""
+    return [
+        latlon_to_xy(lat, lon, origin_lat, origin_lon)
+        for lat, lon in polygon_latlon
+    ]
+
+
+def line_intersections_with_polygon(y, polygon_xy):
+    """
+    Finds where a horizontal scan line at y intersects the polygon.
+    Returns sorted x intersection points.
+    """
+    intersections = []
+    n = len(polygon_xy)
+
+    for i in range(n):
+        x1, y1 = polygon_xy[i]
+        x2, y2 = polygon_xy[(i + 1) % n]
+
+        # Skip horizontal edges to avoid double-counting
+        if y1 == y2:
+            continue
+
+        # Check if scanline crosses this edge
+        if (y >= min(y1, y2)) and (y < max(y1, y2)):
+            t = (y - y1) / (y2 - y1)
+            x = x1 + t * (x2 - x1)
+            intersections.append(x)
+
+    intersections.sort()
+    return intersections
+
+
+def generate_lawnmower_grid_polygon(polygon_latlon, spacing_meters, altitude, margin_meters=5.0):
+    """
+    Generates a lawnmower search pattern inside an arbitrary polygon.
+
+    polygon_latlon should be a list of (lat, lon) points in boundary order.
+    spacing_meters controls distance between search rows.
+    margin_meters keeps the generated path inside the polygon boundary.
+    """
+
+    origin_lat, origin_lon = get_polygon_origin(polygon_latlon)
+    polygon_xy = polygon_to_xy(polygon_latlon, origin_lat, origin_lon)
+
+    y_values = [p[1] for p in polygon_xy]
+    min_y = min(y_values) + margin_meters
+    max_y = max(y_values) - margin_meters
+
+    waypoints = []
+    row_number = 0
+    current_y = min_y
+
+    while current_y <= max_y:
+        intersections = line_intersections_with_polygon(current_y, polygon_xy)
+
+        # A normal convex polygon should give 2 intersections per scan line.
+        # More complex polygons can give more, so we handle them in pairs.
+        if len(intersections) >= 2:
+            for pair_index in range(0, len(intersections) - 1, 2):
+                x_start = intersections[pair_index] + margin_meters
+                x_end = intersections[pair_index + 1] - margin_meters
+
+                # Skip rows that become too short after margin is applied
+                if x_end <= x_start:
+                    continue
+
+                if row_number % 2 == 0:
+                    first_x, second_x = x_start, x_end
+                else:
+                    first_x, second_x = x_end, x_start
+
+                lat1, lon1 = xy_to_latlon(first_x, current_y, origin_lat, origin_lon)
+                lat2, lon2 = xy_to_latlon(second_x, current_y, origin_lat, origin_lon)
+
+                waypoints.append(Waypoint(lat1, lon1, altitude))
+                waypoints.append(Waypoint(lat2, lon2, altitude))
+
+                row_number += 1
+
+        current_y += spacing_meters
+
+    return waypoints
+
+dronePosition = {
 
     
     "latitude": None, 
@@ -75,6 +189,37 @@ detector = YOLO('/home/bc/C-UASC/complete_detector_runs/detect/train2/weights/be
 
 # classification model to distinguish between the targets
 classifier = YOLO('complete_classifier_runs/classify/train/weights/best_ncnn_model')
+
+
+# ============================================================
+# GEOFENCE / LOCALIZATION SEARCH AREA
+# ============================================================
+
+GRID_SPACING_METERS = 20.0
+GEOFENCE_MARGIN_METERS = 5.0
+
+
+# Use your actual fly-zone boundary points.
+# IMPORTANT: Keep these in order around the boundary, either clockwise or counter-clockwise.
+GEOFENCE_POLYGON = [
+    (35.05932, -118.149),  # GF Point A
+    (35.06496, -118.156),  # GF Point B
+    (35.06062, -118.163),  # GF Point C
+    (35.05932, -118.163),  # GF Point D
+]
+
+LOCALIZATION_SEARCH_WAYPOINTS = generate_lawnmower_grid_polygon(
+    GEOFENCE_POLYGON,
+    GRID_SPACING_METERS,
+    SEARCH_ALTITUDE,
+    GEOFENCE_MARGIN_METERS
+)
+
+print(f"[SETUP] Generated {len(LOCALIZATION_SEARCH_WAYPOINTS)} localization search waypoints.")
+
+
+
+
 
 def zoom_frame(frame, zoom_factor=2.0):
     h, w, _ = frame.shape
@@ -97,9 +242,9 @@ def zoom_frame(frame, zoom_factor=2.0):
     return zoomed
 def has_position():
     return (
-        dronePoisition["latitude"] is not None and
-        dronePoisition["longitude"] is not None and
-        dronePoisition["altitude"] is not None
+        dronePosition["latitude"] is not None and
+        dronePosition["longitude"] is not None and
+        dronePosition["altitude"] is not None
     )
 
 def distance_meters(lat1, lon1, lat2, lon2):
@@ -124,7 +269,9 @@ def set_flight_mode(mode):
     if master is None:
         print("MAVLink connection not established.")
         return False
-    
+
+    mode = mode.upper()
+
     if mode not in COPTER_MODES:
         print(f"Unknown flight mode: {mode}")
         return False
@@ -137,10 +284,12 @@ def set_flight_mode(mode):
             master.target_component,
             mavutil.mavlink.MAV_CMD_DO_SET_MODE,
             0,
+            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
             mode_id,
-            0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0
         )
-    print(f"[MODE] Requested mode change to {mode} (ID: {mode_id})")
+
+    print(f"[MODE] Requested mode change to {mode} ({mode_id})")
     return True
 
 def request_pixhawk_mode(mode):
@@ -183,7 +332,7 @@ def goto_location(lat, lon, alt):
                 0b110111111000,  # type_mask (only position)
                 int(lat * 1e7),  # latitude
                 int(lon * 1e7),  # longitude
-                alt,  # altitude in mm
+                alt,  # altitude in m
                 0, 0, 0,  # velocity (not used)
                 0, 0, 0,  # acceleration (not used)
                 0, 0  # yaw, yaw_rate (not used)
@@ -212,26 +361,37 @@ def send_local_velocity(vx, vy, vz, duration):
             )
         sleep(0.2)
         
-def wait_until_reached(target_lat, target_lon, radius = 2.0, timeout = 30):
-    """Waits until the drone reaches a specified location."""
+def wait_until_reached(target_lat, target_lon, target_alt, radius=2.0, timeout=60):
+    """Waits until the drone reaches a specified location, while periodically resending the target."""
     start = time()
+    last_resend = 0
+
     while time() - start < timeout:
         if AUTO_MODE == 0:
             print("[WAYPOINT] Cancelled by manual mode.")
             return False
-        
-        lat = dronePoisition["latitude"]
-        lon = dronePoisition["longitude"]
+
+        # Resend waypoint every 2 seconds
+        if time() - last_resend > 2.0:
+            goto_location(target_lat, target_lon, target_alt)
+            last_resend = time()
+
+        lat = dronePosition["latitude"]
+        lon = dronePosition["longitude"]
 
         if lat is None or lon is None:
             sleep(0.2)
             continue
+
         distance = distance_meters(lat, lon, target_lat, target_lon)
         print(f"[WAYPOINT] Distance to target: {distance:.2f} meters")
+
         if distance <= radius:
             print("[WAYPOINT] Target reached.")
             return True
+
         sleep(0.5)
+
     print("[WAYPOINT] Timeout reached without arriving at target.")
     return False
 
@@ -390,7 +550,7 @@ def routine_target_drop():
                 print(f"[TARGET DROP] Payload drop triggered for {class_name} (confidence: {confidence:.2f})")
 
                 AUTO_MODE = 0
-                request_pixhawk_mode("STABILIZE")
+                request_pixhawk_mode("LOITER")
                 """check with Peter if this the correct arming mode, and if we need to disarm after each drop or not. Also check if we need to switch back to stabilize after each drop or not, or if we can just stay in guided and keep sending the drop command when we see a target. """
                 return
         sleep(0.05)
@@ -439,11 +599,9 @@ def routine_package_delivery():
                         goto_location(lat, lon, SEARCH_ALTITUDE)
                         sleep(1)
                     
-                    if try_drop_payload():
-                        print("[PACKAGE DELIVERY] Payload drop triggered at current location.")
 
                     AUTO_MODE = 0
-                    request_pixhawk_mode("STABILIZE")
+                    request_pixhawk_mode("LOITER")
                     return
             lat = dronePosition["latitude"]
             lon = dronePosition["longitude"]
@@ -460,78 +618,111 @@ def routine_package_delivery():
 
     print("[ROUTINE] Package Delivery routine completed all waypoints.")
     AUTO_MODE = 0
-    request_pixhawk_mode("STABILIZE")
+    request_pixhawk_mode("LOITER")
 
 def routine_target_localization():
     """
     AUTO_MODE 3:
-    Searches visually for Bullseye.
-    When seen, records current drone GPS position.
-
-    NOTE:
-    This does not calculate the exact ground coordinate of the target.
-    It records where the drone was when the target was seen.
-    True target geolocation requires altitude AGL, attitude, camera calibration,
-    camera mounting angle, and pixel offset from image center.
+    Moves through a lawnmower search grid inside the geofence.
+    While moving, it constantly checks for Bullseye.
+    When Bullseye is detected, it records the drone's current GPS position.
     """
 
     global AUTO_MODE
 
-    print("[ROUTINE] Target Localization started.")
+    print("[ROUTINE] Target Localization lawnmower search started.")
 
     if not has_position():
-        print("[LOCALIZE] No GPS position yet. Cannot localize target.")
+        print("[LOCALIZE] No GPS position yet. Cannot start localization search.")
         AUTO_MODE = 0
         return
 
     request_pixhawk_mode("GUIDED")
+    print(f"[LOCALIZE] Generated {len(LOCALIZATION_SEARCH_WAYPOINTS)} search waypoints.")
 
-    while AUTO_MODE == 3:
-        detection = detect_target()
 
-        if detection is None:
-            sleep(0.05)
-            continue
+    for index, wp in enumerate(LOCALIZATION_SEARCH_WAYPOINTS, start=1):
+        if AUTO_MODE != 3:
+            print("[LOCALIZE] Localization search cancelled.")
+            return
 
-        class_name = detection["class_name"]
-        confidence = detection["confidence"]
+        print(f"[LOCALIZE] Going to search waypoint {index}/{len(LOCALIZATION_SEARCH_WAYPOINTS)}")
+        print(f"[LOCALIZE] lat={wp.latitude}, lon={wp.longitude}, alt={wp.altitude}")
 
-        print(f"[LOCALIZE] Saw {class_name} confidence={confidence:.2f}")
+        goto_location(wp.latitude, wp.longitude, wp.altitude)
 
-        if class_name == "Bullseye" and confidence > 0.80:
-            lat = dronePosition["latitude"]
-            lon = dronePosition["longitude"]
-            alt = dronePosition["altitude"]
+        waypoint_start = time()
+        last_resend = 0
 
-            if lat is not None and lon is not None:
-                target_data = {
-                    "class_name": class_name,
-                    "confidence": confidence,
-                    "drone_latitude": lat,
-                    "drone_longitude": lon,
-                    "drone_altitude": alt,
-                    "time": time(),
-                }
+        while AUTO_MODE == 3:
+            # Keep resending the current waypoint every 2 seconds
+            if time() - last_resend > 2.0:
+                goto_location(wp.latitude, wp.longitude, wp.altitude)
+                last_resend = time()
 
-                localized_targets.append(target_data)
+            # Run vision while traveling
+            detection = detect_target()
 
-                print("[LOCALIZE] Target recorded:")
-                print(target_data)
+            if detection is not None:
+                class_name = detection["class_name"]
+                confidence = detection["confidence"]
 
-                AUTO_MODE = 0
-                request_pixhawk_mode("LOITER")
-                return
+                print(f"[LOCALIZE] Saw {class_name} confidence={confidence:.2f}")
 
-        sleep(0.05)
+                if class_name == "Bullseye" and confidence > 0.80:
+                    lat = dronePosition["latitude"]
+                    lon = dronePosition["longitude"]
+                    alt = dronePosition["altitude"]
 
-    print("[ROUTINE] Target Localization exited.")
+                    if lat is not None and lon is not None:
+                        target_data = {
+                            "class_name": class_name,
+                            "confidence": confidence,
+                            "drone_latitude": lat,
+                            "drone_longitude": lon,
+                            "drone_altitude": alt,
+                            "time": time(),
+                        }
 
+                        localized_targets.append(target_data)
+
+                        print("[LOCALIZE] Target recorded:")
+                        print(target_data)
+
+                        AUTO_MODE = 0
+                        request_pixhawk_mode("LOITER")
+                        return
+
+            # Check if waypoint reached
+            current_lat = dronePosition["latitude"]
+            current_lon = dronePosition["longitude"]
+
+            if current_lat is not None and current_lon is not None:
+                distance = distance_meters(
+                    current_lat,
+                    current_lon,
+                    wp.latitude,
+                    wp.longitude
+                )
+
+                print(f"[LOCALIZE] Distance to search waypoint: {distance:.2f} meters")
+
+                if distance <= 2.0:
+                    print(f"[LOCALIZE] Reached search waypoint {index}.")
+                    break
+
+            # Timeout for this waypoint
+            if time() - waypoint_start > 60:
+                print(f"[LOCALIZE] Timeout on search waypoint {index}. Moving to next.")
+                break
+
+            sleep(0.1)
+
+    print("[LOCALIZE] Finished lawnmower search. Switching to LOITER.")
+    AUTO_MODE = 0
+    request_pixhawk_mode("LOITER")
+    
 def routine_waypoint_navigation():
-    """
-    AUTO_MODE 4:
-    Flies through a list of GPS waypoints.
-    """
-
     global AUTO_MODE
 
     print("[ROUTINE] Waypoint Navigation started.")
@@ -543,22 +734,28 @@ def routine_waypoint_navigation():
 
     request_pixhawk_mode("GUIDED")
 
-    for wp in NAV_WAYPOINTS:
+    for index, wp in enumerate(NAV_WAYPOINTS, start=1):
         if AUTO_MODE != 4:
             print("[WAYPOINT] Cancelled.")
             return
+
+        print(f"[WAYPOINT] Going to waypoint {index}/{len(NAV_WAYPOINTS)}")
+        print(f"[WAYPOINT] lat={wp.latitude}, lon={wp.longitude}, alt={wp.altitude}")
 
         goto_location(wp.latitude, wp.longitude, wp.altitude)
 
         reached = wait_until_reached(
             wp.latitude,
             wp.longitude,
+            wp.altitude,
             radius=2.0,
-            timeout=45,
+            timeout=60,
         )
 
         if not reached:
-            print("[WAYPOINT] Failed to reach waypoint. Moving on.")
+            print(f"[WAYPOINT] Failed to reach waypoint {index}. Moving on.")
+        else:
+            print(f"[WAYPOINT] Reached waypoint {index}.")
 
     print("[WAYPOINT] Route complete. Switching to LOITER.")
     AUTO_MODE = 0
@@ -658,9 +855,6 @@ def handle_rc_channels(msg):
         request_pixhawk_mode("ALTHOLD")
         return
 
-    # SB high: companion computer allowed
-    request_pixhawk_mode("GUIDED")
-
     # SC has priority over SA for specialized autonomous modes
     if remote_control_6 > 1900:
         requested_mode = 4  # Waypoint Navigation
@@ -674,7 +868,13 @@ def handle_rc_channels(msg):
         else:
             requested_mode = 2  # Package Delivery
 
-    request_auto_mode(requested_mode)
+     # SB high: companion computer allowed
+    if requested_mode == 0:
+        request_auto_mode(0)
+        request_pixhawk_mode("LOITER")  # or LOITER/STABILIZE, your choice
+    else:
+        request_pixhawk_mode("GUIDED")
+        request_auto_mode(requested_mode)
 
 
 def mavlink_loop():
@@ -733,7 +933,8 @@ def mavlink_loop():
             print("------------------------------------")
 
         elif msg_type == "HEARTBEAT":
-            print(f"[HEARTBEAT] Current Pixhawk mode: {mavutil.mode_string_v10(msg)}")
+            actual_mode = mavutil.mode_string_v10(msg).upper()
+            print(f"[HEARTBEAT] Current Pixhawk mode: {actual_mode}")
 
         elif msg_type == "RC_CHANNELS":
             handle_rc_channels(msg)
@@ -747,4 +948,3 @@ def mavlink_loop():
 if __name__ == "__main__":
     threading.Thread(target=mavlink_loop, daemon=True).start()
     autonomy_loop()
-
