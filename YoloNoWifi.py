@@ -15,7 +15,7 @@ last_position_print_time = 0
 last_heartbeat_print_time = 0
 SERIAL_PRINT_INTERVAL = 1.0
 
-STREAM_HOST = "192.168.137.137"
+STREAM_HOST = "192.168.1.77"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -42,9 +42,6 @@ AUTO_MODE_NAMES = {
 }
 
 COPTER_MODES = {
-    "STABILIZE":0,
-    "ALTHOLD":2,
-    "AUTO":3,
     "GUIDED":4,
     "LOITER":5,
     "RTL":6,
@@ -476,7 +473,8 @@ def send_local_velocity(vx, vy, vz, duration):
                 0, 0  # yaw, yaw_rate (not used)
             )
         sleep(0.2)
-        
+
+
 def wait_until_reached(target_lat, target_lon, target_alt, radius=2.0, timeout=60):
     """Waits until the drone reaches a specified location, while periodically resending the target."""
     start = time()
@@ -888,6 +886,8 @@ def autonomy_loop():
     last_printed_mode = None
 
     while True:
+
+       
         mode = AUTO_MODE
 
         if mode != last_printed_mode:
@@ -968,14 +968,16 @@ def handle_rc_channels(msg):
     # SB low: emergency/recovery RTL
     if flight_mode_switch < 1300:
         request_auto_mode(0)
-        request_pixhawk_mode("RTL")
+        request_pixhawk_mode("LOITER")
         return
 
     # SB middle: pilot controlled AltHold
-    if flight_mode_switch < 1700:
+    if flight_mode_switch > 1700:
         request_auto_mode(0)
-        request_pixhawk_mode("ALTHOLD")
+        request_pixhawk_mode("RTL")  # or ALT_HOLD if you want to allow manual stick control, but GUIDED is safer for switching in and out of autonomous modes
         return
+    
+    request_pixhawk_mode("GUIDED")
 
     # SC has priority over SA for specialized autonomous modes
     if remote_control_6 > 1900:
@@ -991,12 +993,12 @@ def handle_rc_channels(msg):
             requested_mode = 2  # Package Delivery
 
      # SB high: companion computer allowed
+    request_auto_mode(requested_mode)
+
     if requested_mode == 0:
-        request_auto_mode(0)
-        request_pixhawk_mode("LOITER")  # or LOITER/STABILIZE, your choice
+        request_pixhawk_mode("LOITER")
     else:
         request_pixhawk_mode("GUIDED")
-        request_auto_mode(requested_mode)
 
 
 def mavlink_loop():
