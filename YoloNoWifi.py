@@ -10,6 +10,25 @@ import threading
 from queue import Queue
 import math
 
+last_rc_print_time = 0
+last_position_print_time = 0
+last_heartbeat_print_time = 0
+SERIAL_PRINT_INTERVAL = 1.0
+
+STREAM_HOST = "192.168.137.137"
+Stream_Port = 5600
+Stream_Width = 640
+Stream_Height = 480
+Stream_FPS = 30
+Stream_Bitrate = 1000
+Stream_enabled = True 
+
+latest_frame = None
+latest_frame_time = 0
+
+camera_lock = threading.Lock()
+
+
 AUTO_MODE = 0
 
 master = None
@@ -35,6 +54,8 @@ last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
 mavlink_lock = threading.Lock()
 current_requested_pixhawk_mode = None
+
+
  
 SEARCH_ALTITUDE = 10.0
 class Waypoint: 
@@ -181,7 +202,10 @@ localized_targets = []
 
 
 camera = Picamera2()
-camera.configure(camera.create_preview_configuration())
+camera.configure(camera.create_video_configuration(
+    main ={"size": (Stream_Width, Stream_Height), "format": "RGB888"}, 
+    controls={"FrameRate": Stream_FPS}
+))
 camera.start()
 
 #detector for the preliminary target detectiopn (trained on the blank target) 
@@ -189,6 +213,97 @@ detector = YOLO('/home/bc/C-UASC/complete_detector_runs/detect/train2/weights/be
 
 # classification model to distinguish between the targets
 classifier = YOLO('complete_classifier_runs/classify/train/weights/best_ncnn_model')
+
+
+def camera_loop():
+    global latest_frame
+    global latest_frame_time
+
+    while True:
+        try:
+            frame = camera.capture_array()
+
+            if frame is None:
+                sleep(0.01)
+                continue
+
+            if frame.ndim == 3 and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+
+            with camera_lock:
+                latest_frame = frame.copy()
+                latest_frame_time = time()
+
+        except Exception as e:
+            print(f"[CAMERA] Error capturing frame: {e}")
+            sleep(0.1)
+
+def get_latest_frame(timeout=2.0):
+    start = time()
+    while time() - start < timeout:
+        with camera_lock:
+            if latest_frame is not None:
+                return latest_frame.copy()
+        sleep(0.05)
+    
+    print("[CAMERA] Timeout waiting for latest frame.")
+    return None 
+def build_gstreamer_pipeline():
+    return (
+        f"appsrc is-live=true block=true format=time "
+        f"caps=video/x-raw,format=BGR,width={Stream_Width},height={Stream_Height},framerate={Stream_FPS}/1 ! "
+        "videoconvert ! "
+        "video/x-raw,format=I420 ! "
+        f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={Stream_Bitrate} key-int-max={Stream_FPS} ! "
+        "h264parse config-interval=1 ! "
+        "mpegtsmux ! "
+        f"udpsink host={STREAM_HOST} port={Stream_Port} sync=false async=false"
+    )
+
+def gstreamer_loop():
+    if not Stream_enabled:
+        print("[STREAM] Streaming disabled.")
+        return
+
+    pipeline = build_gstreamer_pipeline()
+
+    print(f"[STREAM] Starting UDP stream to udp://{STREAM_HOST}:{Stream_Port}")
+    print(f"[STREAM] Pipeline: {pipeline}")
+
+    writer = cv2.VideoWriter(
+        pipeline,
+        cv2.CAP_GSTREAMER,
+        0,
+        Stream_FPS,
+        (Stream_Width, Stream_Height),
+        True,
+    )
+
+    if not writer.isOpened():
+        print("[STREAM] Failed to open GStreamer VideoWriter.")
+        return
+
+    frame_interval = 1.0 / Stream_FPS
+    next_frame_time = time()
+
+    while True:
+        frame_rgb = get_latest_frame(timeout=2.0)
+
+        if frame_rgb is None:
+            sleep(0.1)
+            continue
+
+        if frame_rgb.shape[1] != Stream_Width or frame_rgb.shape[0] != Stream_Height:
+            frame_rgb = cv2.resize(frame_rgb, (Stream_Width, Stream_Height))
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        writer.write(frame_bgr)
+
+        sleep_time = next_frame_time - time()
+        if sleep_time > 0:
+            sleep(sleep_time)
+
+        next_frame_time += frame_interval
 
 
 # ============================================================
@@ -240,6 +355,7 @@ def zoom_frame(frame, zoom_factor=2.0):
     zoomed = cv2.resize(cropped, (w, h))
 
     return zoomed
+
 def has_position():
     return (
         dronePosition["latitude"] is not None and
@@ -479,11 +595,12 @@ def get_classifier_label(class_results):
 def detect_target():
     """Captures a frame, runs detection and classification, and returns results."""
 
-    frame = camera.capture_array()
+    frame_rgb = get_latest_frame(timeout=2.0)
+    if frame_rgb is None:
+        sleep(0.05)
+        return None
+    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    # Camera settings are weird, color correct before running detection 
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     frame = zoom_frame(frame, zoom_factor=2.0)
     frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
@@ -825,18 +942,23 @@ def handle_rc_channels(msg):
     CH7 / SD:
         high   = Manual payload drop
     """
+    global last_rc_print_time
 
     remote_control_5 = msg.chan5_raw  # SA
     remote_control_6 = msg.chan6_raw  # SC
     manual_drop = msg.chan7_raw       # SD
     flight_mode_switch = msg.chan8_raw  # SB
 
-    print(
-        f"CH5={remote_control_5}, "
-        f"CH6={remote_control_6}, "
-        f"CH7={manual_drop}, "
-        f"CH8={flight_mode_switch}"
-    )
+    current_time = time()
+
+    if current_time - last_rc_print_time >= SERIAL_PRINT_INTERVAL:
+        print(
+            f"[RC] CH5 ={remote_control_5}, | "
+            f"CH6 ={remote_control_6}, | "
+            f"CH7 ={manual_drop}, | "
+            f"CH8 ={flight_mode_switch}"
+        )
+        last_rc_print_time = current_time
 
     # Manual payload drop
     if manual_drop > 1800:
@@ -879,6 +1001,8 @@ def handle_rc_channels(msg):
 
 def mavlink_loop():
     global master
+    global last_position_print_time
+    global last_heartbeat_print_time
     global dronePosition
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
@@ -924,21 +1048,28 @@ def mavlink_loop():
             dronePosition["longitude"] = msg.lon / 1e7
             dronePosition["altitude"] = msg.relative_alt / 1000.0
 
-            print(
-                f"Current Position: "
-                f"lat={dronePosition['latitude']}, "
-                f"lon={dronePosition['longitude']}, "
-                f"alt={dronePosition['altitude']}"
-            )
-            print("------------------------------------")
+            current_time = time()
+
+            if current_time - last_position_print_time >= SERIAL_PRINT_INTERVAL:
+                print(
+                    f"Current Position: "
+                    f"lat={dronePosition['latitude']}, "
+                    f"lon={dronePosition['longitude']}, "
+                    f"alt={dronePosition['altitude']}"
+                )
+                print("------------------------------------")
+                last_position_print_time = current_time
 
         elif msg_type == "HEARTBEAT":
             actual_mode = mavutil.mode_string_v10(msg).upper()
-            print(f"[HEARTBEAT] Current Pixhawk mode: {actual_mode}")
+            current_time = time() 
 
+            if current_time - last_heartbeat_print_time >= SERIAL_PRINT_INTERVAL:
+                print(f"Heartbeat: Current Pixhawk mode: {actual_mode}")
+                last_heartbeat_print_time = current_time
+            
         elif msg_type == "RC_CHANNELS":
             handle_rc_channels(msg)
-            print("************************************")
 
 
 # ============================================================
@@ -946,5 +1077,11 @@ def mavlink_loop():
 # ============================================================
 
 if __name__ == "__main__":
+
+    threading.Thread(target=camera_loop, daemon=True).start()
+    threading.Thread(target=gstreamer_loop, daemon=True).start()
     threading.Thread(target=mavlink_loop, daemon=True).start()
-    autonomy_loop()
+    threading.Thread(target=autonomy_loop, daemon=True).start()
+
+    while True:
+        sleep(1)
