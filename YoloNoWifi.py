@@ -430,6 +430,7 @@ def request_auto_mode(requested_mode):
         print(f"[AUTO_MODE] Switching to {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} Mode.")
     else:
         print(f"[AUTO_MODE] Already in {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} Mode. Ignoring request to switch to {AUTO_MODE_NAMES.get(requested_mode, 'Unknown')} Mode.")
+        sleep(0.1)
 
 def goto_location(lat, lon, alt):
     if master is None:
@@ -977,7 +978,7 @@ def handle_rc_channels(msg):
         request_pixhawk_mode("RTL")  # or ALT_HOLD if you want to allow manual stick control, but GUIDED is safer for switching in and out of autonomous modes
         return
     
-    request_pixhawk_mode("GUIDED")
+    requested_mode = 0
 
     # SC has priority over SA for specialized autonomous modes
     if remote_control_6 > 1900:
