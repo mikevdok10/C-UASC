@@ -272,7 +272,7 @@ gpsCoordinate_2 = Waypoint(-35.3623292, 149.1648316, 2)
 gpsCoordinate_3 = Waypoint(-35.3635847, 149.1650730, 2)
 gpsCoordinate_4 = Waypoint(-35.3634185, 149.1660118, 2)
 
-targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 2)
+targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 10)
 
 boundingBoxCorners = [
     gpsCoordinate_1,
@@ -699,6 +699,7 @@ def routine_target_drop():
 
     last_goto_send_time = 0
     last_no_detection_print_time = 0
+    last_detector_test_print_time = 0
 
     # Convert once instead of every loop
     lat_int = int(targetDropTestCoordinate.latitude * 1e7)
@@ -731,33 +732,36 @@ def routine_target_drop():
 
             last_goto_send_time = current_time
 
+
+        if current_time - last_detector_test_print_time >= 1.0:
+            print("[TARGET DROP TEST] Detection loop is running...")
+            last_detector_test_print_time = current_time
+
         # Detection now runs the whole time AUTO_MODE == 1
         detection = detect_target()
 
         if detection is None:
+            current_time = time()
             if current_time - last_no_detection_print_time >= 1.0:
-                print("[TARGET DROP] Searching... no target detected.")
                 last_no_detection_print_time = current_time
-
-            sleep(0.05)
+            sleep(0.1)
             continue
 
         class_name = detection["class_name"]
         confidence = detection["confidence"]
 
-        print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
-
-        if "bullseye" in class_name.lower() and confidence > 0.8:
+        if class_name == "Bullseye" and confidence > 0.8:
+            print("Bullseye Found")
             if try_drop_payload():
-                print(f"[TARGET DROP] Payload drop triggered for {class_name} confidence={confidence:.2f}")
-
+                print("Payload Dropped")
                 AUTO_MODE = 0
-                set_mode("LOITER")
-                return
 
-        sleep(0.05)
+                set_mode("RTL") 
+        sleep(0.05)      
 
-    print("[ROUTINE] Exiting Target Drop routine.")
+        
+
+        
 
     
 
