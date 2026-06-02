@@ -8,6 +8,7 @@ from time import sleep, time
 import threading 
 from queue import Queue
 import math
+from math import radians, sin, cos, sqrt, atan2
 
 last_rc_print_time = 0
 last_position_print_time = 0
@@ -32,6 +33,9 @@ AUTO_MODE = 0
 
 KEYBOARD_TEST_MODE = True
 auto_mode_lock = threading.Lock()
+
+
+
 
 master = None
 
@@ -130,39 +134,104 @@ def move_forward_for_seconds(speed_m_s, seconds):
     send_body_velocity(0, 0, 0)
     print("Stopped")
 
+def get_distance_meters(lat1, lon1, lat2, lon2):
+    """Returns distance in meters between two GPS coordinates."""
+    R = 6371000
 
-def goto_coordinate(latitude, longitude, altitude, seconds=5):
+    lat1_rad = radians(lat1)
+    lat2_rad = radians(lat2)
+
+    delta_lat = radians(lat2 - lat1)
+    delta_lon = radians(lon2 - lon1)
+
+    a = (
+        sin(delta_lat / 2) ** 2
+        + cos(lat1_rad) * cos(lat2_rad) * sin(delta_lon / 2) ** 2
+    )
+
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
+
+def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=60):
     """
-    Moves the drone to a GPS coordinate using SET_POSITION_TARGET_GLOBAL_INT.
-    Assumes the drone is already in GUIDED mode, armed, and flying.
+    Sends the drone to a GPS coordinate and waits until it arrives.
+
+    Returns:
+        True  = arrived successfully
+        False = AUTO_MODE changed or timeout happened
     """
+    global AUTO_MODE
 
     lat_int = int(latitude * 1e7)
     lon_int = int(longitude * 1e7)
 
-    # Position enabled, velocity/acceleration/yaw ignored.
+    # Position enabled, velocity/acceleration/yaw ignored
     type_mask = 0b0000111111111000
 
-    print(f"Going to: lat={latitude}, lon={longitude}, alt={altitude}")
+    print(f"[GOTO] Going to: lat={latitude}, lon={longitude}, alt={altitude}")
 
     start_time = time()
+    last_goto_send_time = 0
+    last_distance_print_time = 0
 
-    while time() - start_time < seconds:
-        master.mav.set_position_target_global_int_send(
-            0,
-            master.target_system,
-            master.target_component,
-            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-            type_mask,
-            lat_int,
-            lon_int,
-            altitude,
-            0, 0, 0,     # velocity ignored
-            0, 0, 0,     # acceleration ignored
-            0, 0         # yaw, yaw_rate ignored
+    while AUTO_MODE != 0:
+        current_time = time()
+
+        # Timeout safety
+        if current_time - start_time > timeout:
+            print("[GOTO] Timeout. Did not reach target coordinate.")
+            return False
+
+        # Send goto command at 5 Hz
+        if current_time - last_goto_send_time >= 0.2:
+            with mavlink_lock:
+                master.mav.set_position_target_global_int_send(
+                    0,
+                    master.target_system,
+                    master.target_component,
+                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                    type_mask,
+                    lat_int,
+                    lon_int,
+                    altitude,
+                    0, 0, 0,
+                    0, 0, 0,
+                    0, 0
+                )
+
+            last_goto_send_time = current_time
+
+        current_lat = dronePosition["latitude"]
+        current_lon = dronePosition["longitude"]
+
+        if current_lat is None or current_lon is None:
+            if current_time - last_distance_print_time >= 1.0:
+                print("[GOTO] Waiting for GPS position...")
+                last_distance_print_time = current_time
+
+            sleep(0.05)
+            continue
+
+        distance = get_distance_meters(
+            current_lat,
+            current_lon,
+            latitude,
+            longitude
         )
 
-        time.sleep(0.2)
+        if current_time - last_distance_print_time >= 1.0:
+            print(f"[GOTO] Distance to target: {distance:.2f} meters")
+            last_distance_print_time = current_time
+
+        if distance <= arrival_radius:
+            print("[GOTO] Arrived at target coordinate.")
+            return True
+
+        sleep(0.05)
+
+    print("[GOTO] AUTO_MODE changed. Exiting goto.")
+    return False
 
 
 def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
@@ -690,74 +759,327 @@ def detect_target():
 # AUTONOMOUS ROUTINES
 # ============================================================
 
+def getBullseyeCenterLocation(detection):
+
+    if detection is None:
+        return None
+    
+    x1, y1, x2, y2 = detection["bbox"]
+
+    targetX = (x1 + x2) / 2
+    targetY = (y1 + y2) / 2
+
+    cameraCenterx = Stream_Width // 2
+    cameraCentery = Stream_Height // 2
+
+    cameraErrorX = targetX - cameraCenterx
+    cameraErrorY = targetY - cameraCentery
+
+    return cameraErrorX, cameraErrorY
+
+
+
 def routine_target_drop():
-    """AUTO_MODE 1: fly toward target coordinate while constantly running detection."""
+    """AUTO_MODE 1:
+    Go to target coordinate.
+    After arrival, run detection.
+    When Bullseye is found, drop payload and RTL.
+    """
     global AUTO_MODE
 
     print("[ROUTINE] Starting Target Drop routine.")
     set_mode("GUIDED")
 
-    last_goto_send_time = 0
-    last_no_detection_print_time = 0
+    arrived = goto_coordinate(
+        targetDropTestCoordinate.latitude,
+        targetDropTestCoordinate.longitude,
+        targetDropTestCoordinate.altitude,
+        arrival_radius=2.0,
+        timeout=60
+    )
+
+    if not arrived:
+        print("[TARGET DROP] Did not arrive. Exiting Target Drop routine.")
+        return
+
+    if AUTO_MODE != 1:
+        print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
+        return
+
+    print("[TARGET DROP] Goto finished. Starting detection loop.")
+
     last_detector_test_print_time = 0
-
-    # Convert once instead of every loop
-    lat_int = int(targetDropTestCoordinate.latitude * 1e7)
-    lon_int = int(targetDropTestCoordinate.longitude * 1e7)
-    altitude = targetDropTestCoordinate.altitude
-
-    # Position enabled, velocity/acceleration/yaw ignored
-    type_mask = 0b0000111111111000
+    last_no_detection_print_time = 0
 
     while AUTO_MODE == 1:
         current_time = time()
-
-        # Keep sending the goto command while also allowing detection to run.
-        # 5 Hz is enough for GUIDED position target updates.
-        if current_time - last_goto_send_time >= 0.2:
-            with mavlink_lock:
-                master.mav.set_position_target_global_int_send(
-                    0,
-                    master.target_system,
-                    master.target_component,
-                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                    type_mask,
-                    lat_int,
-                    lon_int,
-                    altitude,
-                    0, 0, 0,     # velocity ignored
-                    0, 0, 0,     # acceleration ignored
-                    0, 0         # yaw, yaw_rate ignored
-                )
-
-            last_goto_send_time = current_time
-
 
         if current_time - last_detector_test_print_time >= 1.0:
             print("[TARGET DROP TEST] Detection loop is running...")
             last_detector_test_print_time = current_time
 
-        # Detection now runs the whole time AUTO_MODE == 1
         detection = detect_target()
 
         if detection is None:
-            current_time = time()
             if current_time - last_no_detection_print_time >= 1.0:
+                print("[TARGET DROP] No target detected.")
                 last_no_detection_print_time = current_time
+
             sleep(0.1)
             continue
 
         class_name = detection["class_name"]
         confidence = detection["confidence"]
 
-        if class_name == "Bullseye" and confidence > 0.8:
-            print("Bullseye Found")
-            if try_drop_payload():
-                print("Payload Dropped")
-                AUTO_MODE = 0
+        print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
 
-                set_mode("RTL") 
-        sleep(0.05)      
+        if class_name == "Bullseye" and confidence > 0.8:
+            print("[TARGET DROP] Bullseye Found")
+
+            if try_drop_payload():
+                print("[TARGET DROP] Payload Dropped")
+
+                AUTO_MODE = 0
+                set_mode("RTL")
+
+                print("[TARGET DROP] Returning to launch.")
+                break
+
+        sleep(0.05)
+
+    print("[ROUTINE] Exiting Target Drop routine.")
+
+
+def get_bullseye_center_error(detection):
+    """
+    Returns bullseye center error from the center of the camera frame in pixels.
+    """
+
+    if detection is None:
+        return None
+
+    x1, y1, x2, y2 = detection["bbox"]
+
+    target_x = (x1 + x2) / 2
+    target_y = (y1 + y2) / 2
+
+    frame_center_x = Stream_Width / 2
+    frame_center_y = Stream_Height / 2
+
+    error_x_pixels = target_x - frame_center_x
+    error_y_pixels = target_y - frame_center_y
+
+    return error_x_pixels, error_y_pixels
+
+
+def align_over_bullseye():
+    """
+    Uses the downward-facing camera to center the drone over the bullseye.
+
+    Returns True when centered.
+    Returns False if AUTO_MODE changes.
+    """
+
+    global AUTO_MODE
+
+    print("[ALIGN] Starting bullseye alignment.")
+
+    # You need to tune these for your actual camera.
+    # These are placeholders.
+    CAMERA_HORIZONTAL_FOV_DEG = 50.22
+    CAMERA_VERTICAL_FOV_DEG = 38.73
+
+    CENTER_TOLERANCE_PIXELS = 25
+
+    # How aggressively the drone moves toward the target.
+    # Start low for safety.
+    ALIGN_GAIN = 0.20
+
+    MAX_ALIGN_SPEED = 0.5  # m/s
+
+    centered_frame_count = 0
+    REQUIRED_CENTERED_FRAMES = 5
+
+    last_print_time = 0
+
+    while AUTO_MODE == 1:
+        current_time = time()
+
+        detection = detect_target()
+
+        if detection is None:
+            send_body_velocity(0, 0, 0)
+
+            if current_time - last_print_time >= 1.0:
+                print("[ALIGN] No target detected.")
+                last_print_time = current_time
+
+            sleep(0.1)
+            continue
+
+        class_name = detection["class_name"]
+        confidence = detection["confidence"]
+
+        if class_name != "Bullseye" or confidence < 0.8:
+            send_body_velocity(0, 0, 0)
+
+            if current_time - last_print_time >= 1.0:
+                print(f"[ALIGN] Saw {class_name}, confidence={confidence:.2f}, not using it.")
+                last_print_time = current_time
+
+            sleep(0.1)
+            continue
+
+        error = get_bullseye_center_error(detection)
+
+        if error is None:
+            send_body_velocity(0, 0, 0)
+            sleep(0.1)
+            continue
+
+        error_x_pixels, error_y_pixels = error
+
+        altitude = dronePosition["altitude"]
+
+        if altitude is None:
+            send_body_velocity(0, 0, 0)
+            print("[ALIGN] Waiting for altitude...")
+            sleep(0.1)
+            continue
+
+        horizontal_fov_rad = math.radians(CAMERA_HORIZONTAL_FOV_DEG)
+        vertical_fov_rad = math.radians(CAMERA_VERTICAL_FOV_DEG)
+
+        ground_width_m = 2 * altitude * math.tan(horizontal_fov_rad / 2)
+        ground_height_m = 2 * altitude * math.tan(vertical_fov_rad / 2)
+
+        meters_per_pixel_x = ground_width_m / Stream_Width
+        meters_per_pixel_y = ground_height_m / Stream_Height
+
+        right_error_m = error_x_pixels * meters_per_pixel_x
+        forward_error_m = error_y_pixels * meters_per_pixel_y
+
+        # IMPORTANT:
+        # These signs may need to be flipped depending on camera orientation.
+        right_speed = right_error_m * ALIGN_GAIN
+        forward_speed = forward_error_m * ALIGN_GAIN
+
+        # Limit speed for safety
+        right_speed = max(-MAX_ALIGN_SPEED, min(MAX_ALIGN_SPEED, right_speed))
+        forward_speed = max(-MAX_ALIGN_SPEED, min(MAX_ALIGN_SPEED, forward_speed))
+
+        if current_time - last_print_time >= 0.5:
+            print(
+                f"[ALIGN] pixel_error_x={error_x_pixels:.1f}, "
+                f"pixel_error_y={error_y_pixels:.1f}, "
+                f"right_error_m={right_error_m:.2f}, "
+                f"forward_error_m={forward_error_m:.2f}, "
+                f"cmd_forward={forward_speed:.2f}, "
+                f"cmd_right={right_speed:.2f}"
+            )
+            last_print_time = current_time
+
+        if (
+            abs(error_x_pixels) <= CENTER_TOLERANCE_PIXELS
+            and abs(error_y_pixels) <= CENTER_TOLERANCE_PIXELS
+        ):
+            centered_frame_count += 1
+            send_body_velocity(0, 0, 0)
+
+            print(f"[ALIGN] Bullseye centered frame {centered_frame_count}/{REQUIRED_CENTERED_FRAMES}")
+
+            if centered_frame_count >= REQUIRED_CENTERED_FRAMES:
+                print("[ALIGN] Bullseye centered. Ready to drop.")
+                return True
+
+        else:
+            centered_frame_count = 0
+            send_body_velocity(forward_speed, right_speed, 0)
+
+        sleep(0.1)
+
+    send_body_velocity(0, 0, 0)
+    print("[ALIGN] AUTO_MODE changed. Exiting alignment.")
+    return False
+
+def routine_target_drop():
+    """AUTO_MODE 1:
+    Go to target coordinate.
+    After arrival, run detection.
+    When Bullseye is found, drop payload and RTL.
+    """
+    global AUTO_MODE
+
+    print("[ROUTINE] Starting Target Drop routine.")
+    set_mode("GUIDED")
+
+    arrived = goto_coordinate(
+        targetDropTestCoordinate.latitude,
+        targetDropTestCoordinate.longitude,
+        targetDropTestCoordinate.altitude,
+        arrival_radius=2.0,
+        timeout=60
+    )
+
+    if not arrived:
+        print("[TARGET DROP] Did not arrive. Exiting Target Drop routine.")
+        return
+
+    if AUTO_MODE != 1:
+        print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
+        return
+
+    print("[TARGET DROP] Goto finished. Starting detection loop.")
+
+    last_detector_test_print_time = 0
+    last_no_detection_print_time = 0
+
+    while AUTO_MODE == 1:
+        current_time = time()
+
+        if current_time - last_detector_test_print_time >= 1.0:
+            print("[TARGET DROP TEST] Detection loop is running...")
+            last_detector_test_print_time = current_time
+
+        detection = detect_target()
+
+        if detection is None:
+            if current_time - last_no_detection_print_time >= 1.0:
+                print("[TARGET DROP] No target detected.")
+                last_no_detection_print_time = current_time
+
+            sleep(0.1)
+            continue
+
+        class_name = detection["class_name"]
+        confidence = detection["confidence"]
+
+        print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
+
+        if class_name == "Bullseye" and confidence > 0.8:
+            print("[TARGET DROP] Bullseye Found")
+
+            checkIfAligned = align_over_bullseye()
+
+            if not checkIfAligned:
+                return
+            
+            print("target aligned")
+
+            if try_drop_payload():
+                print("[TARGET DROP] Payload Dropped")
+
+                AUTO_MODE = 0
+                set_mode("RTL")
+
+                print("[TARGET DROP] Returning to launch.")
+                break
+
+        sleep(0.05)
+
+    print("[ROUTINE] Exiting Target Drop routine.")
+
+    
 
         
 
