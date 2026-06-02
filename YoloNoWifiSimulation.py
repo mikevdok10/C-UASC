@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-from ast import While
 
-=======
->>>>>>> 033c7f1 (kinda working target drop)
 from picamera2 import Picamera2
 from ultralytics import YOLO
 import cv2
@@ -13,10 +9,7 @@ from time import sleep, time
 import threading 
 from queue import Queue
 import math
-<<<<<<< HEAD
 from math import radians, sin, cos, sqrt, atan2
-=======
->>>>>>> 033c7f1 (kinda working target drop)
 
 last_rc_print_time = 0
 last_position_print_time = 0
@@ -41,13 +34,6 @@ AUTO_MODE = 0
 
 KEYBOARD_TEST_MODE = True
 auto_mode_lock = threading.Lock()
-
-<<<<<<< HEAD
-
-
-
-=======
->>>>>>> 033c7f1 (kinda working target drop)
 master = None
 
 AUTO_MODE_NAMES = {
@@ -145,7 +131,6 @@ def move_forward_for_seconds(speed_m_s, seconds):
     send_body_velocity(0, 0, 0)
     print("Stopped")
 
-<<<<<<< HEAD
 def get_distance_meters(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
     R = 6371000
@@ -174,19 +159,10 @@ def goto_coordinate(latitude, longitude, altitude, arrival_radius=1.0, timeout=6
         False = AUTO_MODE changed or timeout happened
     """
     global AUTO_MODE
-=======
-
-def goto_coordinate(latitude, longitude, altitude, seconds=5):
-    """
-    Moves the drone to a GPS coordinate using SET_POSITION_TARGET_GLOBAL_INT.
-    Assumes the drone is already in GUIDED mode, armed, and flying.
-    """
->>>>>>> 033c7f1 (kinda working target drop)
 
     lat_int = int(latitude * 1e7)
     lon_int = int(longitude * 1e7)
 
-<<<<<<< HEAD
     # Position enabled, velocity/acceleration/yaw ignored
     type_mask = 0b0000111111111000
 
@@ -253,31 +229,6 @@ def goto_coordinate(latitude, longitude, altitude, seconds=5):
 
     print("[GOTO] AUTO_MODE changed. Exiting goto.")
     return False
-=======
-    # Position enabled, velocity/acceleration/yaw ignored.
-    type_mask = 0b0000111111111000
-
-    print(f"Going to: lat={latitude}, lon={longitude}, alt={altitude}")
-
-    start_time = time()
-
-    while time() - start_time < seconds:
-        master.mav.set_position_target_global_int_send(
-            0,
-            master.target_system,
-            master.target_component,
-            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-            type_mask,
-            lat_int,
-            lon_int,
-            altitude,
-            0, 0, 0,     # velocity ignored
-            0, 0, 0,     # acceleration ignored
-            0, 0         # yaw, yaw_rate ignored
-        )
-
-        time.sleep(0.2)
->>>>>>> 033c7f1 (kinda working target drop)
 
 
 def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
@@ -387,11 +338,7 @@ gpsCoordinate_2 = Waypoint(-35.3623292, 149.1648316, 2)
 gpsCoordinate_3 = Waypoint(-35.3635847, 149.1650730, 2)
 gpsCoordinate_4 = Waypoint(-35.3634185, 149.1660118, 2)
 
-<<<<<<< HEAD
 targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 10)
-=======
-targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 2)
->>>>>>> 033c7f1 (kinda working target drop)
 
 boundingBoxCorners = [
     gpsCoordinate_1,
@@ -809,7 +756,6 @@ def detect_target():
 # AUTONOMOUS ROUTINES
 # ============================================================
 
-<<<<<<< HEAD
 
 def get_bullseye_center_error(detection):
     #returns how far the bullseye is from the center of the camera frame. 
@@ -1038,65 +984,14 @@ def packageDropBeanbag():
             last_detector_test_print_time = current_time
 
         # starts the detection loop 
-=======
-def routine_target_drop():
-    """AUTO_MODE 1: fly toward target coordinate while constantly running detection."""
-    global AUTO_MODE
-
-    print("[ROUTINE] Starting Target Drop routine.")
-    set_mode("GUIDED")
-
-    last_goto_send_time = 0
-    last_no_detection_print_time = 0
-
-    # Convert once instead of every loop
-    lat_int = int(targetDropTestCoordinate.latitude * 1e7)
-    lon_int = int(targetDropTestCoordinate.longitude * 1e7)
-    altitude = targetDropTestCoordinate.altitude
-
-    # Position enabled, velocity/acceleration/yaw ignored
-    type_mask = 0b0000111111111000
-
-    while AUTO_MODE == 1:
-        current_time = time()
-
-        # Keep sending the goto command while also allowing detection to run.
-        # 5 Hz is enough for GUIDED position target updates.
-        if current_time - last_goto_send_time >= 0.2:
-            with mavlink_lock:
-                master.mav.set_position_target_global_int_send(
-                    0,
-                    master.target_system,
-                    master.target_component,
-                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                    type_mask,
-                    lat_int,
-                    lon_int,
-                    altitude,
-                    0, 0, 0,     # velocity ignored
-                    0, 0, 0,     # acceleration ignored
-                    0, 0         # yaw, yaw_rate ignored
-                )
-
-            last_goto_send_time = current_time
-
-        # Detection now runs the whole time AUTO_MODE == 1
->>>>>>> 033c7f1 (kinda working target drop)
         detection = detect_target()
 
         if detection is None:
             if current_time - last_no_detection_print_time >= 1.0:
-<<<<<<< HEAD
                 print("[TARGET DROP] No target detected.")
                 last_no_detection_print_time = current_time
 
             sleep(0.1)
-=======
-                print("[TARGET DROP] Searching... no target detected.")
-                last_no_detection_print_time = current_time
-
-            sleep(0.05)
->>>>>>> 033c7f1 (kinda working target drop)
             continue
 
         class_name = detection["class_name"]
@@ -1104,7 +999,6 @@ def routine_target_drop():
 
         print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
 
-<<<<<<< HEAD
         # This is only going to run the code if the Bullseye object is detected
         #The detector must have a confidence of 0.8 or higher to be used 
         if class_name == "Bullseye" and confidence > 0.8:
@@ -1158,23 +1052,12 @@ def routine_target_drop():
             break
 
             
-=======
-        if "bullseye" in class_name.lower() and confidence > 0.8:
-            if try_drop_payload():
-                print(f"[TARGET DROP] Payload drop triggered for {class_name} confidence={confidence:.2f}")
-
-                AUTO_MODE = 0
-                set_mode("LOITER")
-                return
-
->>>>>>> 033c7f1 (kinda working target drop)
         sleep(0.05)
 
     print("[ROUTINE] Exiting Target Drop routine.")
 
     
 
-<<<<<<< HEAD
 def packaageDeliverySafely():
     #Goes to a specified coordinate
    #runs detection Loop
@@ -1303,8 +1186,6 @@ def targetLocalization():
 
     
 
-=======
->>>>>>> 033c7f1 (kinda working target drop)
 def autonomy_loop():
     """
     Runs the selected autonomous routine.
@@ -1327,7 +1208,6 @@ def autonomy_loop():
             continue
 
         if mode == 1:
-<<<<<<< HEAD
             print("running package drop")
             packageDropBeanbag()
             sleep(0.1)
@@ -1336,23 +1216,12 @@ def autonomy_loop():
         elif mode == 2:
             print("Running package delviery")
             packaageDeliverySafely()
-=======
-            print("RUNNING TARGET DROP ROUTINE")
-            routine_target_drop()
-
-        elif mode == 2:
->>>>>>> 033c7f1 (kinda working target drop)
             sleep(0.1)
             continue
 
         elif mode == 3:
-<<<<<<< HEAD
             print("running target localization")
             targetLocalization()
-=======
-            goto_coordinate(targetDropTestCoordinate.latitude, targetDropTestCoordinate.longitude, targetDropTestCoordinate.altitude)
-            lawnmowerSearch(local_pts, ref_lat, ref_lon, SEARCH_ALTITUDE, spacingBetweenPaths=5.0)
->>>>>>> 033c7f1 (kinda working target drop)
             sleep(0.1)
             continue
 
