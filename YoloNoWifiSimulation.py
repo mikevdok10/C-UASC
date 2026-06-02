@@ -30,6 +30,9 @@ camera_lock = threading.Lock()
 
 AUTO_MODE = 0
 
+KEYBOARD_TEST_MODE = True
+auto_mode_lock = threading.Lock()
+
 master = None
 
 AUTO_MODE_NAMES = {
@@ -56,19 +59,34 @@ current_requested_pixhawk_mode = None
 SEARCH_ALTITUDE = 8.5
 
 def set_mode(mode_name):
-    modes = master.mode_mapping()
-    if mode_name not in modes:
-        raise Exception(f"Mode {mode_name} not available. Available modes: {list(modes.keys())}")
+    global master
 
-    mode_id = modes[mode_name]
+    if master is None:
+        print(f"[MODE] Cannot set {mode_name}. MAVLink is not connected yet.")
+        return False
 
-    master.mav.set_mode_send(
-        master.target_system,
-        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-        mode_id
-    )
+    try:
+        modes = master.mode_mapping()
 
-    print(f"Mode set command sent: {mode_name}")
+        if mode_name not in modes:
+            print(f"[MODE] Mode {mode_name} not available. Available modes: {list(modes.keys())}")
+            return False
+
+        mode_id = modes[mode_name]
+
+        with mavlink_lock:
+            master.mav.set_mode_send(
+                master.target_system,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                mode_id
+            )
+
+        print(f"[MODE] Mode set command sent: {mode_name}")
+        return True
+
+    except Exception as e:
+        print(f"[MODE] Failed to set mode {mode_name}: {e}")
+        return False
 
 class Waypoint: 
     def __init__(self, latitude, longitude, altitude):
@@ -127,9 +145,9 @@ def goto_coordinate(latitude, longitude, altitude, seconds=5):
 
     print(f"Going to: lat={latitude}, lon={longitude}, alt={altitude}")
 
-    start_time = time.time()
+    start_time = time()
 
-    while time.time() - start_time < seconds:
+    while time() - start_time < seconds:
         master.mav.set_position_target_global_int_send(
             0,
             master.target_system,
@@ -253,6 +271,8 @@ gpsCoordinate_1 = Waypoint(-35.3622723, 149.1657758, 2)
 gpsCoordinate_2 = Waypoint(-35.3623292, 149.1648316, 2)
 gpsCoordinate_3 = Waypoint(-35.3635847, 149.1650730, 2)
 gpsCoordinate_4 = Waypoint(-35.3634185, 149.1660118, 2)
+
+targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 2)
 
 boundingBoxCorners = [
     gpsCoordinate_1,
@@ -430,6 +450,107 @@ def request_auto_mode(requested_mode):
         sleep(0.1)
 
 
+def force_auto_mode(requested_mode):
+    """
+    Keyboard/testing version of request_auto_mode().
+    This allows you to swap between autonomous modes immediately.
+    Useful for bench testing without RC switches.
+    """
+    global AUTO_MODE
+
+    if requested_mode not in AUTO_MODE_NAMES:
+        print(f"[KEYBOARD] Invalid AUTO_MODE: {requested_mode}")
+        return
+
+    with auto_mode_lock:
+        if AUTO_MODE != requested_mode:
+            print(
+                f"[KEYBOARD] Switching from "
+                f"{AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} "
+                f"to {AUTO_MODE_NAMES.get(requested_mode, 'Unknown')}"
+            )
+
+        AUTO_MODE = requested_mode
+
+
+def keyboard_test_loop():
+    """
+    Lets you switch autonomous modes using keyboard keys.
+
+    Keys:
+        0 = Manual / stop autonomous routine
+        1 = Target Drop
+        2 = Package Delivery
+        3 = Target Localization
+        4 = Waypoint Navigation
+
+        l = LOITER
+        g = GUIDED
+        r = RTL
+
+        q = quit keyboard loop
+    """
+
+    import sys
+    import termios
+    import tty
+    import select
+
+    print("[KEYBOARD] Keyboard test mode active.")
+    print("[KEYBOARD] Press 0-4 to change AUTO_MODE.")
+    print("[KEYBOARD] Press l=LOITER, g=GUIDED, r=RTL, q=quit keyboard thread.")
+
+    old_settings = termios.tcgetattr(sys.stdin)
+
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+
+        while True:
+            if select.select([sys.stdin], [], [], 0.1)[0]:
+                key = sys.stdin.read(1).lower()
+
+                if key == "0":
+                    force_auto_mode(0)
+                    set_mode("LOITER")
+
+                elif key == "1":
+                    force_auto_mode(1)
+                    set_mode("GUIDED")
+
+                elif key == "2":
+                    force_auto_mode(2)
+                    set_mode("GUIDED")
+
+                elif key == "3":
+                    force_auto_mode(3)
+                    set_mode("GUIDED")
+
+                elif key == "4":
+                    force_auto_mode(4)
+                    set_mode("GUIDED")
+
+                elif key == "l":
+                    force_auto_mode(0)
+                    set_mode("LOITER")
+
+                elif key == "g":
+                    set_mode("GUIDED")
+
+                elif key == "r":
+                    force_auto_mode(0)
+                    set_mode("RTL")
+
+                elif key == "q":
+                    print("[KEYBOARD] Exiting keyboard test loop.")
+                    break
+
+                else:
+                    print(f"[KEYBOARD] Unknown key: {key}")
+
+            sleep(0.05)
+
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 # ============================================================
 # PAYLOAD / SERVO HELPERS
 # ============================================================
@@ -550,6 +671,9 @@ def detect_target():
 
         class_name, confidence = get_classifier_label(class_results)
 
+        print(f"[VISION] Classifier says: {class_name}, confidence={confidence:.2f}")
+
+
         if confidence > best_confidence:
             best_confidence = confidence
             best_detection = {
@@ -558,6 +682,8 @@ def detect_target():
                 "bbox": (x1, y1, x2, y2)
             }
         
+    
+        
     return best_detection
 
 # ============================================================
@@ -565,30 +691,70 @@ def detect_target():
 # ============================================================
 
 def routine_target_drop():
-    """Autonomous routine for target drop mode."""
+    """AUTO_MODE 1: fly toward target coordinate while constantly running detection."""
     global AUTO_MODE
-    
+
     print("[ROUTINE] Starting Target Drop routine.")
     set_mode("GUIDED")
 
+    last_goto_send_time = 0
+    last_no_detection_print_time = 0
+
+    # Convert once instead of every loop
+    lat_int = int(targetDropTestCoordinate.latitude * 1e7)
+    lon_int = int(targetDropTestCoordinate.longitude * 1e7)
+    altitude = targetDropTestCoordinate.altitude
+
+    # Position enabled, velocity/acceleration/yaw ignored
+    type_mask = 0b0000111111111000
+
     while AUTO_MODE == 1:
+        current_time = time()
+
+        # Keep sending the goto command while also allowing detection to run.
+        # 5 Hz is enough for GUIDED position target updates.
+        if current_time - last_goto_send_time >= 0.2:
+            with mavlink_lock:
+                master.mav.set_position_target_global_int_send(
+                    0,
+                    master.target_system,
+                    master.target_component,
+                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                    type_mask,
+                    lat_int,
+                    lon_int,
+                    altitude,
+                    0, 0, 0,     # velocity ignored
+                    0, 0, 0,     # acceleration ignored
+                    0, 0         # yaw, yaw_rate ignored
+                )
+
+            last_goto_send_time = current_time
+
+        # Detection now runs the whole time AUTO_MODE == 1
         detection = detect_target()
+
         if detection is None:
+            if current_time - last_no_detection_print_time >= 1.0:
+                print("[TARGET DROP] Searching... no target detected.")
+                last_no_detection_print_time = current_time
+
             sleep(0.05)
             continue
+
         class_name = detection["class_name"]
         confidence = detection["confidence"]
 
         print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
 
-        if class_name == "Bullseye" and confidence > 0.8:
+        if "bullseye" in class_name.lower() and confidence > 0.8:
             if try_drop_payload():
-                print(f"[TARGET DROP] Payload drop triggered for {class_name} (confidence: {confidence:.2f})")
+                print(f"[TARGET DROP] Payload drop triggered for {class_name} confidence={confidence:.2f}")
 
                 AUTO_MODE = 0
                 set_mode("LOITER")
-                """check with Peter if this the correct arming mode, and if we need to disarm after each drop or not. Also check if we need to switch back to stabilize after each drop or not, or if we can just stay in guided and keep sending the drop command when we see a target. """
                 return
+
         sleep(0.05)
 
     print("[ROUTINE] Exiting Target Drop routine.")
@@ -617,6 +783,7 @@ def autonomy_loop():
             continue
 
         if mode == 1:
+            print("RUNNING TARGET DROP ROUTINE")
             routine_target_drop()
 
         elif mode == 2:
@@ -624,7 +791,7 @@ def autonomy_loop():
             continue
 
         elif mode == 3:
-            goto_coordinate(local_pts[0][0])
+            goto_coordinate(targetDropTestCoordinate.latitude, targetDropTestCoordinate.longitude, targetDropTestCoordinate.altitude)
             lawnmowerSearch(local_pts, ref_lat, ref_lon, SEARCH_ALTITUDE, spacingBetweenPaths=5.0)
             sleep(0.1)
             continue
@@ -665,8 +832,11 @@ def handle_rc_channels(msg):
     CH7 / SD:
         high   = Manual payload drop
     """
+    
     global last_rc_print_time
 
+    if KEYBOARD_TEST_MODE:
+        return
     remote_control_5 = msg.chan5_raw  # SA
     remote_control_6 = msg.chan6_raw  # SC
     manual_drop = msg.chan7_raw       # SD
@@ -731,7 +901,7 @@ def mavlink_loop():
     global dronePosition
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
+    master = mavutil.mavlink_connection("tcp:192.168.1.4:5762")
 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
@@ -762,7 +932,7 @@ def mavlink_loop():
             sleep(2)
 
             with mavlink_lock:
-                master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
+                master = mavutil.mavlink_connection("tcp:192.168.1.4:5762")
                 master.wait_heartbeat()
 
             print("[MAVLINK] Reconnected.")
@@ -805,8 +975,11 @@ if __name__ == "__main__":
 
     threading.Thread(target=camera_loop, daemon=True).start()
     threading.Thread(target=gstreamer_loop, daemon=True).start()
-    #threading.Thread(target=mavlink_loop, daemon=True).start()
-    #threading.Thread(target=autonomy_loop, daemon=True).start()
+    threading.Thread(target=mavlink_loop, daemon=True).start()
+    threading.Thread(target=autonomy_loop, daemon=True).start()
+
+    if KEYBOARD_TEST_MODE:
+        threading.Thread(target=keyboard_test_loop, daemon=True).start()
 
     while True:
         sleep(1)
