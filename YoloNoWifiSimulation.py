@@ -1,4 +1,3 @@
-
 from picamera2 import Picamera2
 from ultralytics import YOLO
 import cv2
@@ -10,6 +9,8 @@ import threading
 from queue import Queue
 import math
 from math import radians, sin, cos, sqrt, atan2
+import os
+from datetime import datetime 
 
 last_rc_print_time = 0
 last_position_print_time = 0
@@ -32,7 +33,7 @@ camera_lock = threading.Lock()
 
 AUTO_MODE = 0
 
-KEYBOARD_TEST_MODE = True
+KEYBOARD_TEST_MODE = False
 auto_mode_lock = threading.Lock()
 
 master = None
@@ -42,7 +43,7 @@ AUTO_MODE_NAMES = {
     1: "Target Drop",
     2: "Package Delivery",
     3: "Target Localization",
-    4: "Waypoint Navigation"
+    4: "Autonomous Test"
 }
 
 COPTER_MODES = {
@@ -55,7 +56,6 @@ last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
 mavlink_lock = threading.Lock()
 current_requested_pixhawk_mode = None
-
 
  
 SEARCH_ALTITUDE = 8.5
@@ -123,11 +123,11 @@ def send_body_velocity(forward_m_s, right_m_s, down_m_s):
 def move_forward_for_seconds(speed_m_s, seconds):
     print(f"Moving forward at {speed_m_s} m/s for {seconds} seconds")
 
-    start_time = time.time()
+    start_time = time()
 
-    while time.time() - start_time < seconds:
+    while time() - start_time < seconds:
         send_body_velocity(speed_m_s, 0, 0)
-        time.sleep(0.1)  # 10 Hz
+        sleep(0.1)  # 10 Hz
 
     send_body_velocity(0, 0, 0)
     print("Stopped")
@@ -263,15 +263,45 @@ def is_duplicate_target(class_name, lat, lon):
 
     return False
 
+def write_target_to_blackbox(target_log):
+    global BLACKBOX_FILE
+
+    if not os.path.exists(BLACKBOX_FOLDER):
+        os.makedirs(BLACKBOX_FOLDER)
+
+    if BLACKBOX_FILE is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        BLACKBOX_FILE = os.path.join(
+            BLACKBOX_FOLDER,
+            f"target_localization_log_{timestamp}.txt"
+        )
+
+        with open(BLACKBOX_FILE, "w") as file:
+            file.write("TARGET LOCALIZATION BLACKBOX LOG\n")
+            file.write(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            file.write("=" * 60 + "\n\n")
+
+    with open(BLACKBOX_FILE, "a") as file:
+        file.write("TARGET LOGGED\n")
+
+        for key, value in target_log.items():
+            file.write(f"{key}: {value}\n")
+
+        file.write("-" * 60 + "\n\n")
+
+    print(f"[BLACKBOX] Target written to {BLACKBOX_FILE}")
+
 
 def log_localized_target(detection):
     """
-    Logs the GPS location of a target that YOLO/classifier spotted.
+    Logs the estimated real-world GPS location of a target.
 
-    Important:
-    This logs the drone's current GPS coordinate at the moment the target
-    is seen. It does not yet calculate the exact ground offset from the
-    camera frame center.
+    This does NOT just log the drone GPS.
+    It calculates the target ground position based on:
+    - target pixel offset from camera center
+    - altitude
+    - camera FOV
+    - drone yaw
     """
 
     if detection is None:
@@ -286,39 +316,42 @@ def log_localized_target(detection):
     if confidence < TARGET_LOG_CONFIDENCE:
         return
 
-    current_lat = dronePosition["latitude"]
-    current_lon = dronePosition["longitude"]
-    current_alt = dronePosition["altitude"]
+    estimated = estimate_target_gps_from_detection(detection)
 
-    if current_lat is None or current_lon is None:
-        print("[LOCALIZATION] Saw target, but GPS is not ready. Not logging.")
+    if estimated is None:
         return
 
-    if is_duplicate_target(class_name, current_lat, current_lon):
+    target_lat = estimated["latitude"]
+    target_lon = estimated["longitude"]
+
+    if is_duplicate_target(class_name, target_lat, target_lon):
+        return
+
+    # Optional: keeps only one log per class 0-9.
+    # Remove this if there can be multiple targets with the same class.
+    if any(t["class_name"] == class_name for t in localized_targets):
         return
 
     target_log = {
         "class_name": class_name,
         "confidence": confidence,
-        "latitude": current_lat,
-        "longitude": current_lon,
-        "altitude": current_alt,
-        "bbox": detection["bbox"],
-        "time": time()
+        "latitude": target_lat,
+        "longitude": target_lon,
+        "altitude": estimated["altitude"],
+        "north_offset_m": estimated["north_offset_m"],
+        "east_offset_m": estimated["east_offset_m"],
     }
 
-    if target_log in localized_targets:
-        pass
-    else:
-        localized_targets.append(target_log)
-
-    
+    localized_targets.append(target_log)
+    write_target_to_blackbox(target_log)
 
     print(
         f"[LOCALIZATION] LOGGED TARGET {class_name} | "
         f"confidence={confidence:.2f} | "
-        f"gps=({current_lat:.7f}, {current_lon:.7f}) | "
-        f"alt={current_alt:.2f}m | "
+        f"target_gps=({target_lat:.7f}, {target_lon:.7f}) | "
+        f"drone_gps=({dronePosition['latitude']:.7f}, {dronePosition['longitude']:.7f}) | "
+        f"forward={estimated['forward_m']:.2f}m | "
+        f"right={estimated['right_m']:.2f}m | "
         f"bbox={detection['bbox']}"
     )
 
@@ -552,8 +585,6 @@ def lawnmowerSearch(localPoints, ref_lat, ref_lon, spacingBetweenPaths):
             f"confidence={target['confidence']:.2f} | "
             f"lat={target['latitude']:.7f}, "
             f"lon={target['longitude']:.7f}, "
-            f"alt={target['altitude']} | "
-            f"bbox={target['bbox']}"
         )
 
     return gps_path
@@ -582,12 +613,14 @@ def local_to_gps(x, y, ref_lat, ref_lon):
 
 
 # GPS bounding box corners
-gpsCoordinate_1 = Waypoint(35.4057323, -118.971140, 8.5)
-gpsCoordinate_2 = Waypoint(35.4054568, -118.970740, 8.5)
-gpsCoordinate_3 = Waypoint(35.4060668, -118.97016, 8.5)
-gpsCoordinate_4 = Waypoint(35.4063182, -118.970566, 8.5)
+gpsCoordinate_1 = Waypoint(-35.3634403, 149.164859, 8.5)
+gpsCoordinate_2 = Waypoint(-35.3633813, 149.165396, 8.5)
+gpsCoordinate_3 = Waypoint(-35.3632490, 149.164859, 8.5)
+gpsCoordinate_4 = Waypoint(-35.3632140, 149.165345, 8.5)
 
 targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 10)
+
+testaAutonCoordiante = None
 
 boundingBoxCorners = [
     gpsCoordinate_1,
@@ -609,16 +642,19 @@ local_pts = [
     for wp in boundingBoxCorners
 ]
 
-
 dronePosition = {
-
-    
     "latitude": None, 
     "longitude": None,
-    "altitude": None
+    "altitude": None,
+    "yaw": None
 }
 
 localized_targets = []
+
+BLACKBOX_FOLDER = "blackbox_logs"
+BLACKBOX_FILE = None 
+
+
 
 
 camera = Picamera2()
@@ -668,6 +704,7 @@ def get_latest_frame(timeout=2.0):
     
     print("[CAMERA] Timeout waiting for latest frame.")
     return None 
+
 def build_gstreamer_pipeline():
     return (
         f"appsrc is-live=true block=true format=time "
@@ -866,9 +903,11 @@ def keyboard_test_loop():
 
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
 # ============================================================
 # PAYLOAD / SERVO HELPERS
 # ============================================================
+
 def trigger_servo(channel=9, pwm=1400):
     if master is None:
         print("[SERVO]MAVLink connection not established.")
@@ -960,7 +999,7 @@ def detect_target():
     frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
     # Run detector on the first frame that comes in 
-    detected_objects = detector(frame, conf=0.4, verbose=False)
+    detected_objects = detector(frame, conf=0.8, verbose=False)
 
     best_detection = None
     best_confidence = 0.0
@@ -997,14 +1036,11 @@ def detect_target():
                 "bbox": (x1, y1, x2, y2)
             }
         
-    
-        
     return best_detection
 
 # ============================================================
 # AUTONOMOUS ROUTINES
 # ============================================================
-
 
 def getBullseyeCenterLocation(detection):
 
@@ -1023,9 +1059,6 @@ def getBullseyeCenterLocation(detection):
     cameraErrorY = targetY - cameraCentery
 
     return cameraErrorX, cameraErrorY
-
-
-
 
 
 def packageDropBeanbag():
@@ -1142,11 +1175,10 @@ def packageDropBeanbag():
         sleep(0.05)
 
     print("[ROUTINE] Exiting Target Drop routine.")
-
     
 
-def packaageDeliverySafely():
-    #Goes to a specified coordinate
+def packageDeliverySafely():
+   #Goes to a specified coordinate
    #runs detection Loop
    #aligns over the target and descends to a safe altitude and drops the payload 
    #initiates RTL 
@@ -1179,7 +1211,7 @@ def packaageDeliverySafely():
     last_no_detection_print_time = 0
 
     # this will always run as long as the AUTO MODE is left in target drop mode
-    #will only end if a bullseye is detected 
+    # will only end if a bullseye is detected 
     while AUTO_MODE == 1:
         current_time = time()
 
@@ -1298,7 +1330,98 @@ def targetLocalization():
         AUTO_MODE = 0
         set_mode("RTL")
 
-    
+
+def estimate_target_gps_from_detection(detection):
+    """
+    Estimates the actual GPS location of the detected target on the ground.
+
+    Assumptions:
+    - Camera is facing straight down.
+    - Top of image = front of drone.
+    - Right side of image = right side of drone.
+    - Drone altitude is relative altitude above ground.
+    - Drone yaw is available from MAVLink ATTITUDE.
+    """
+
+    if detection is None:
+        return None
+
+    current_lat = dronePosition["latitude"]
+    current_lon = dronePosition["longitude"]
+    altitude = dronePosition["altitude"]
+    yaw = dronePosition["yaw"]
+
+    if current_lat is None or current_lon is None:
+        print("[LOCALIZATION] GPS not ready. Cannot estimate target GPS.")
+        return None
+
+    if altitude is None:
+        print("[LOCALIZATION] Altitude not ready. Cannot estimate target GPS.")
+        return None
+
+    if yaw is None:
+        print("[LOCALIZATION] Yaw not ready. Cannot estimate target GPS.")
+        return None
+
+    # These should match your real camera/lens setup.
+    CAMERA_HORIZONTAL_FOV_DEG = 50.22
+    CAMERA_VERTICAL_FOV_DEG = 38.73
+
+    # Your detect_target() zooms the frame by 2.0
+    zoomFactor = 2.0
+
+    x1, y1, x2, y2 = detection["bbox"]
+
+    target_x = (x1 + x2) / 2
+    target_y = (y1 + y2) / 2
+
+    frame_center_x = Stream_Width / 2
+    frame_center_y = Stream_Height / 2
+
+    error_x_pixels = target_x - frame_center_x
+    error_y_pixels = target_y - frame_center_y
+
+    horizontal_fov_rad = math.radians(CAMERA_HORIZONTAL_FOV_DEG)
+    vertical_fov_rad = math.radians(CAMERA_VERTICAL_FOV_DEG)
+
+    ground_width_m = (2 * altitude * math.tan(horizontal_fov_rad / 2)) / zoomFactor
+    ground_height_m = (2 * altitude * math.tan(vertical_fov_rad / 2)) / zoomFactor
+
+    meters_per_pixel_x = ground_width_m / Stream_Width
+    meters_per_pixel_y = ground_height_m / Stream_Height
+
+    # Camera frame to drone body-frame offset.
+    # +right_m means target is to the right of drone.
+    # +forward_m means target is in front of drone.
+    right_m = error_x_pixels * meters_per_pixel_x
+    forward_m = -error_y_pixels * meters_per_pixel_y
+
+    # Convert body-frame forward/right into local North/East.
+    # yaw = 0 means drone nose points North.
+    north_offset_m = forward_m * math.cos(yaw) - right_m * math.sin(yaw)
+    east_offset_m = forward_m * math.sin(yaw) + right_m * math.cos(yaw)
+
+    # Your local_to_gps expects x=east, y=north.
+    target_lat, target_lon = local_to_gps(
+        east_offset_m,
+        north_offset_m,
+        current_lat,
+        current_lon
+    )
+
+    return {
+        "latitude": target_lat,
+        "longitude": target_lon,
+        "altitude": altitude,
+        "right_m": right_m,
+        "forward_m": forward_m,
+        "north_offset_m": north_offset_m,
+        "east_offset_m": east_offset_m,
+        "pixel_error_x": error_x_pixels,
+        "pixel_error_y": error_y_pixels,
+        "meters_per_pixel_x": meters_per_pixel_x,
+        "meters_per_pixel_y": meters_per_pixel_y
+    }
 
 def get_bullseye_center_error(detection):
     """
@@ -1350,6 +1473,8 @@ def align_over_bullseye():
     centered_frame_count = 0
     REQUIRED_CENTERED_FRAMES = 5
 
+    zoomFactor = 2.0
+
     last_print_time = 0
 
     while AUTO_MODE == 1:
@@ -1400,14 +1525,14 @@ def align_over_bullseye():
         horizontal_fov_rad = math.radians(CAMERA_HORIZONTAL_FOV_DEG)
         vertical_fov_rad = math.radians(CAMERA_VERTICAL_FOV_DEG)
 
-        ground_width_m = 2 * altitude * math.tan(horizontal_fov_rad / 2)
-        ground_height_m = 2 * altitude * math.tan(vertical_fov_rad / 2)
+        ground_width_m = (2 * altitude * math.tan(horizontal_fov_rad / 2)) / zoomFactor
+        ground_height_m = (2 * altitude * math.tan(vertical_fov_rad / 2)) / zoomFactor
 
         meters_per_pixel_x = ground_width_m / Stream_Width
         meters_per_pixel_y = ground_height_m / Stream_Height
 
-        right_error_m = error_x_pixels * meters_per_pixel_x
-        forward_error_m = error_y_pixels * meters_per_pixel_y
+        right_error_m = (error_x_pixels * meters_per_pixel_x)
+        forward_error_m = (error_y_pixels * meters_per_pixel_y) - 0.075
 
         # IMPORTANT:
         # These signs may need to be flipped depending on camera orientation.
@@ -1482,7 +1607,7 @@ def autonomy_loop():
 
         elif mode == 2:
             print("Running package delviery")
-            packaageDeliverySafely()
+            packageDeliverySafely()
             sleep(0.1)
             continue
 
@@ -1493,6 +1618,15 @@ def autonomy_loop():
             continue
 
         elif mode == 4:
+            print("Running test autonomous Routine")
+
+
+            set_mode("GUIDED")
+            #goto_coordinate(testaAutonCoordiante)
+            move_forward_for_seconds(1,5)
+            try_drop_payload() 
+            sleep(2)
+            set_mode("RTL")      
             sleep(0.1) 
             continue
 
@@ -1597,7 +1731,8 @@ def mavlink_loop():
     global dronePosition
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    master = mavutil.mavlink_connection("tcp:192.168.137.1:5762")
+    #master = mavutil.mavlink_connection("tcp:192.168.1.49:5762")
+    master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
@@ -1638,6 +1773,8 @@ def mavlink_loop():
             dronePosition["latitude"] = msg.lat / 1e7
             dronePosition["longitude"] = msg.lon / 1e7
             dronePosition["altitude"] = msg.relative_alt / 1000.0
+        elif msg_type == "ATTITUDE":
+            dronePosition["yaw"] = msg.yaw
 
             current_time = time()
 
