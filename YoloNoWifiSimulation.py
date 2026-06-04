@@ -1146,15 +1146,7 @@ def packageDropBeanbag():
     #Sets mode to guided mode to star the routine 
     set_mode("GUIDED")
 
-    #Goes to the coordinates of the bullseye rough coordinates at a specifed altitude 
 
-    arrived = goto_coordinate(
-        targetDropTestCoordinate.latitude,
-        targetDropTestCoordinate.longitude,
-        targetDropTestCoordinate.altitude,
-        arrival_radius=2.0,
-        timeout=60
-    )
 
     #stops if the auto mode changes 
     if AUTO_MODE != 1:
