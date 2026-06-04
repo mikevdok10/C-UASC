@@ -16,7 +16,7 @@ last_position_print_time = 0
 last_heartbeat_print_time = 0
 SERIAL_PRINT_INTERVAL = 1.0
 
-STREAM_HOST = "192.168.0.102"
+STREAM_HOST = "192.168.0.100"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -315,7 +315,7 @@ def camera_loop():
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
             with camera_lock:
                 latest_frame = frame.copy()
@@ -383,7 +383,7 @@ def gstreamer_loop():
         if frame_rgb.shape[1] != Stream_Width or frame_rgb.shape[0] != Stream_Height:
             frame_rgb = cv2.resize(frame_rgb, (Stream_Width, Stream_Height))
 
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGBA2BGR)
         writer.write(frame_bgr)
 
         sleep_time = next_frame_time - time()
@@ -520,7 +520,7 @@ def detect_target():
     if frame_rgb is None:
         sleep(0.05)
         return None
-    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGBA2BGR)
 
     frame = zoom_frame(frame, zoom_factor=2.0)
     frame = np.ascontiguousarray(frame, dtype=np.uint8)

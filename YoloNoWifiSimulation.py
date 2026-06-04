@@ -17,6 +17,9 @@ last_position_print_time = 0
 last_heartbeat_print_time = 0
 SERIAL_PRINT_INTERVAL = 1.0
 
+last_actual_pixhawk_mode = None 
+last_switch_state = None
+
 STREAM_HOST = "172.20.10.10"
 Stream_Port = 5600
 Stream_Width = 640
@@ -32,8 +35,9 @@ camera_lock = threading.Lock()
 
 
 AUTO_MODE = 0
+auto_ready = True 
 
-KEYBOARD_TEST_MODE = False
+KEYBOARD_TEST_MODE = True
 auto_mode_lock = threading.Lock()
 
 master = None
@@ -60,8 +64,11 @@ current_requested_pixhawk_mode = None
  
 SEARCH_ALTITUDE = 8.5
 
+
+
 def set_mode(mode_name):
     global master
+    global last_pixhawk_mode_command
 
     if master is None:
         print(f"[MODE] Cannot set {mode_name}. MAVLink is not connected yet.")
@@ -83,6 +90,8 @@ def set_mode(mode_name):
                 mode_id
             )
 
+        last_pixhawk_mode_command = mode_name
+        
         print(f"[MODE] Mode set command sent: {mode_name}")
         return True
 
@@ -90,12 +99,16 @@ def set_mode(mode_name):
         print(f"[MODE] Failed to set mode {mode_name}: {e}")
         return False
 
+
+
 class Waypoint: 
     def __init__(self, latitude, longitude, altitude):
         self.latitude = latitude
         self.longitude = longitude
         self.altitude = altitude
  
+
+
 def send_body_velocity(forward_m_s, right_m_s, down_m_s):
     """
     BODY_NED frame:
@@ -120,6 +133,8 @@ def send_body_velocity(forward_m_s, right_m_s, down_m_s):
     )
 
 
+
+
 def move_forward_for_seconds(speed_m_s, seconds):
     print(f"Moving forward at {speed_m_s} m/s for {seconds} seconds")
 
@@ -131,6 +146,42 @@ def move_forward_for_seconds(speed_m_s, seconds):
 
     send_body_velocity(0, 0, 0)
     print("Stopped")
+
+
+
+def takeoff(target_altitude):
+    global master
+
+    print(f"[TAKEOFF] Taking off to {target_altitude} meters")
+    
+    start_time = time() 
+    timeout = 20
+
+    with mavlink_lock:
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0,
+            0, 0, 0 , 0,
+            0, 0,
+            target_altitude
+        )
+
+    while True:
+        current_alt = dronePosition["altitude"]
+
+        
+        if current_alt >= target_altitude * 0.90:
+            print("done ascending ")
+            return True 
+        
+        if time() - start_time > timeout:
+            break
+        
+        sleep(0.5)
+            
+
 
 def get_distance_meters(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
@@ -150,6 +201,7 @@ def get_distance_meters(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
     return R * c
+
 
 
 def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=60):
@@ -237,9 +289,12 @@ TARGET_CLASSES = {
     "Target0", "Target1", "Target2", "Target3", "Target4", "Target5", "Target6", "Target7", "Target8", "Target9"
 }
 
-TARGET_LOG_CONFIDENCE = 0.75
+TARGET_LOG_CONFIDENCE = 0.6
 TARGET_LOG_DISTANCE_M = 2.0
 DETECTION_INTERVAL = 0.20
+
+
+
 
 def is_duplicate_target(class_name, lat, lon):
     """
@@ -263,6 +318,9 @@ def is_duplicate_target(class_name, lat, lon):
 
     return False
 
+
+
+
 def write_target_to_blackbox(target_log):
     global BLACKBOX_FILE
 
@@ -285,11 +343,16 @@ def write_target_to_blackbox(target_log):
         file.write("TARGET LOGGED\n")
 
         for key, value in target_log.items():
-            file.write(f"{key}: {value}\n")
+            if isinstance(value, float):
+                file.write(f"{key}: {value:.7f}\n")
+            else:
+                file.write(f"{key}: {value}\n")
 
         file.write("-" * 60 + "\n\n")
 
     print(f"[BLACKBOX] Target written to {BLACKBOX_FILE}")
+
+
 
 
 def log_localized_target(detection):
@@ -356,6 +419,8 @@ def log_localized_target(detection):
     )
 
 
+
+
 def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
     """
     Creates a local x/y lawnmower path inside the bounding box of the given local points.
@@ -406,6 +471,9 @@ def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
 
     return path
 
+
+
+
 def goto_coordinate_while_detecting(
     latitude,
     longitude,
@@ -440,6 +508,7 @@ def goto_coordinate_while_detecting(
     last_detection_time = 0
     last_no_detection_print_time = 0
 
+    print(f"[DEBUG] Entering goto detection command, AUTO_MODE = {AUTO_MODE}")
     while AUTO_MODE == 3:
         current_time = time()
 
@@ -525,6 +594,9 @@ def goto_coordinate_while_detecting(
     print("[SEARCH GOTO] AUTO_MODE changed. Exiting search goto.")
     return False
 
+
+
+
 def lawnmowerToGPS(localPath, ref_lat, ref_lon, altitude):
     if localPath is None:
         raise ValueError("localPath is None. lawnmowerPath() probably did not return a path.")
@@ -536,6 +608,8 @@ def lawnmowerToGPS(localPath, ref_lat, ref_lon, altitude):
         gps_path.append((lat, lon, altitude))
 
     return gps_path
+
+
 
 
 def lawnmowerSearch(localPoints, ref_lat, ref_lon, spacingBetweenPaths):
@@ -613,10 +687,10 @@ def local_to_gps(x, y, ref_lat, ref_lon):
 
 
 # GPS bounding box corners
-gpsCoordinate_1 = Waypoint(-35.3634403, 149.164859, 8.5)
-gpsCoordinate_2 = Waypoint(-35.3633813, 149.165396, 8.5)
-gpsCoordinate_3 = Waypoint(-35.3632490, 149.164859, 8.5)
-gpsCoordinate_4 = Waypoint(-35.3632140, 149.165345, 8.5)
+gpsCoordinate_1 = Waypoint(35.405923, -118.97084, 6)
+gpsCoordinate_2 = Waypoint(35.405761, -118.97065, 6)
+gpsCoordinate_3 = Waypoint(35.405874, -118.97057, 6)
+gpsCoordinate_4 = Waypoint(35.406004, -118.97073, 6)
 
 targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 10)
 
@@ -784,22 +858,29 @@ def zoom_frame(frame, zoom_factor=2.0):
     return zoomed
 
 
+last_requested_mode = None 
+last_pixhawk_mode_command = None 
 
 def request_auto_mode(requested_mode):
     """Controls the AUTO_MODE state machine and requests Pixhawk mode changes as needed."""
-    global AUTO_MODE
-    if requested_mode == 0:  # Manual Mode
-        if AUTO_MODE != 0:
-            print("[AUTO_MODE] Switching to Manual Mode.")
+    global AUTO_MODE, auto_ready
+    global last_requested_mode
+    if requested_mode == 0:
+        if AUTO_MODE !=0:
+            print("Switching to Loiter")
         AUTO_MODE = 0
-        return
-
+        auto_ready  =True
+        return True 
+    if not auto_ready:
+        print("Return to Loiter First ")
+        return False 
+    
     if AUTO_MODE == 0:
         AUTO_MODE = requested_mode
-        print(f"[AUTO_MODE] Switching to {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} Mode.")
-    else:
-        print(f"[AUTO_MODE] Already in {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} Mode. Ignoring request to switch to {AUTO_MODE_NAMES.get(requested_mode, 'Unknown')} Mode.")
-        sleep(0.1)
+        auto_ready = False
+        print(f"[AUTO_MODE] Switching to {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unkown')} Mode.")
+        return True
+    
 
 
 def force_auto_mode(requested_mode):
@@ -999,7 +1080,7 @@ def detect_target():
     frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
     # Run detector on the first frame that comes in 
-    detected_objects = detector(frame, conf=0.8, verbose=False)
+    detected_objects = detector(frame, conf=0.25, verbose=False)
 
     best_detection = None
     best_confidence = 0.0
@@ -1023,8 +1104,13 @@ def detect_target():
 
         class_results = classifier(crop, imgsz=224, verbose=False)
 
+        
+
         class_name, confidence = get_classifier_label(class_results)
 
+        if confidence < 0.65:
+                    continue
+        
         print(f"[VISION] Classifier says: {class_name}, confidence={confidence:.2f}")
 
 
@@ -1200,7 +1286,7 @@ def packageDeliverySafely():
     )
 
     #stops if the auto mode changes 
-    if AUTO_MODE != 1:
+    if AUTO_MODE != 2:
         print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
         return
 
@@ -1212,7 +1298,7 @@ def packageDeliverySafely():
 
     # this will always run as long as the AUTO MODE is left in target drop mode
     # will only end if a bullseye is detected 
-    while AUTO_MODE == 1:
+    while AUTO_MODE == 2:
         current_time = time()
 
         if current_time - last_detector_test_print_time >= 1.0:
@@ -1237,7 +1323,7 @@ def packageDeliverySafely():
 
         # This is only going to run the code if the Bullseye object is detected
         #The detector must have a confidence of 0.8 or higher to be used 
-        if class_name == "Bullseye" and confidence > 0.8:
+        if class_name == "Bullseye" and confidence > 0.75:
             print("bullseye found")
 
             # starts to align over the bullseye 
@@ -1250,7 +1336,7 @@ def packageDeliverySafely():
 
             set_mode("LAND")
             
-            while AUTO_MODE == 1:
+            while AUTO_MODE == 2:
                 currentAltitude = dronePosition["altitude"]
 
                 #this drops the payload 
@@ -1270,7 +1356,7 @@ def packageDeliverySafely():
             set_mode("GUIDED")
             goto_coordinate(dronePosition["latitude"], dronePosition["longitude"], 10)   
             AUTO_MODE = 0
-            while AUTO_MODE == 1:
+            while AUTO_MODE == 2:
                 currentAltitude = dronePosition["altitude"]
 
                 if currentAltitude is None:
@@ -1294,6 +1380,7 @@ def packageDeliverySafely():
 
 
 def targetLocalization():
+    print("STARTING STARGET LOCALIZATION FUCK")
     global AUTO_MODE
 
     print("[LOCALIZATION] Starting rectangle target localization.")
@@ -1318,6 +1405,7 @@ def targetLocalization():
         for wp in boundingBoxCorners
     ]
 
+    print(f"[DEBUG] AUTO_MODE before lawnmowerSearch = {AUTO_MODE}")
     lawnmowerSearch(
         local_pts,
         ref_lat,
@@ -1578,7 +1666,10 @@ def align_over_bullseye():
     return False
 
 
+    
+
 def autonomy_loop():
+    global AUTO_MODE
     """
     Runs the selected autonomous routine.
     Each routine exits if AUTO_MODE changes.
@@ -1601,32 +1692,44 @@ def autonomy_loop():
 
         if mode == 1:
             print("running package drop")
+            sleep(2)
+            takeoff(9)
+            sleep(2)
             packageDropBeanbag()
             sleep(0.1)
             continue
 
         elif mode == 2:
             print("Running package delviery")
+            sleep(2)
+            takeoff(9)
+            sleep(2)
             packageDeliverySafely()
             sleep(0.1)
             continue
 
         elif mode == 3:
             print("running target localization")
+            sleep(2)
+            takeoff(6)
+            sleep(2)
+            print("Starting Search")
             targetLocalization()
             sleep(0.1)
             continue
 
         elif mode == 4:
+            
             print("Running test autonomous Routine")
-
-
             set_mode("GUIDED")
+            takeoff(5)
             #goto_coordinate(testaAutonCoordiante)
             move_forward_for_seconds(1,5)
-            try_drop_payload() 
-            sleep(2)
+            #try_drop_payload() 
+            sleep(3)
+            AUTO_MODE = 0
             set_mode("RTL")      
+            
             sleep(0.1) 
             continue
 
@@ -1664,6 +1767,8 @@ def handle_rc_channels(msg):
     """
     
     global last_rc_print_time
+
+    
 
     if KEYBOARD_TEST_MODE:
         return
@@ -1715,12 +1820,25 @@ def handle_rc_channels(msg):
         else:
             requested_mode = 2  # Package Delivery
 
+
+    switch_state = (
+        requested_mode,
+        flight_mode_switch < 1300,
+        flight_mode_switch > 1700
+    )
+
+    global last_switch_state
+
+    if switch_state == last_switch_state:
+        return
+    last_switch_state = switch_state
+    
      # SB high: companion computer allowed
-    request_auto_mode(requested_mode)
+    accepted = request_auto_mode(requested_mode)
 
     if requested_mode == 0:
         set_mode("LOITER")
-    else:
+    elif accepted:
         set_mode("GUIDED")
 
 
@@ -1730,9 +1848,11 @@ def mavlink_loop():
     global last_heartbeat_print_time
     global dronePosition
 
+    global last_actual_pixhawk_mode
+
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    #master = mavutil.mavlink_connection("tcp:192.168.1.49:5762")
-    master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
+    master = mavutil.mavlink_connection("tcp:172.20.10.3:5762")
+    #master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
@@ -1763,7 +1883,7 @@ def mavlink_loop():
             sleep(2)
 
             with mavlink_lock:
-                master = mavutil.mavlink_connection("tcp:192.168.1.4:5762")
+                master = mavutil.mavlink_connection("tcp:172.20.10.35762")
                 master.wait_heartbeat()
 
             print("[MAVLINK] Reconnected.")
@@ -1792,10 +1912,10 @@ def mavlink_loop():
             actual_mode = mavutil.mode_string_v10(msg).upper()
             current_time = time() 
 
-            if current_time - last_heartbeat_print_time >= SERIAL_PRINT_INTERVAL:
-                print(f"Heartbeat: Current Pixhawk mode: {actual_mode}")
-                last_heartbeat_print_time = current_time
-            
+            if actual_mode != last_actual_pixhawk_mode:
+                print(f"[PIXHAWK] Mode changed to {actual_mode}")
+                last_actual_pixhawk_mode = actual_mode
+
         elif msg_type == "RC_CHANNELS":
             handle_rc_channels(msg)
 
