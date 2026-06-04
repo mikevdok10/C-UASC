@@ -205,7 +205,7 @@ def get_distance_meters(lat1, lon1, lat2, lon2):
 
 
 
-def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=60):
+def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=10):
 
     """
     Sends the drone to a GPS coordinate and waits until it arrives.
