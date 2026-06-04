@@ -114,7 +114,7 @@ def send_body_velocity(forward_m_s, right_m_s, down_m_s):
         master.target_system,
         master.target_component,
         mavutil.mavlink.MAV_FRAME_BODY_NED,
-        0b0000111111000111,  # only velocity enabled
+        0b0000111111000111,  # only velocity enabled, this is used later to align our drone by specific amounts, ignoring the GPS position of the drone 
         0, 0, 0,             # position ignored
         forward_m_s,
         right_m_s,
@@ -210,7 +210,7 @@ def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=2
     lat_int = int(latitude * 1e7)
     lon_int = int(longitude * 1e7)
 
-    # Position enabled, velocity/acceleration/yaw ignored
+    # Only position enabled, so we are using the parameter WPNAV speed to determine the speed of the drone. 
     type_mask = 0b0000111111111000
 
     print(f"[GOTO] Going to: lat={latitude}, lon={longitude}, alt={altitude}")
@@ -481,7 +481,7 @@ def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, ti
     lat_int = int(latitude * 1e7)
     lon_int = int(longitude * 1e7)
 
-    # Position enabled, velocity/acceleration/yaw ignored
+    # Position enabled, so again just using WPNAV speed to determine how fast 
     type_mask = 0b0000111111111000
 
     print(
