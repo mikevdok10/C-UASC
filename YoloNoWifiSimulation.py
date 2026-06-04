@@ -205,7 +205,7 @@ def get_distance_meters(lat1, lon1, lat2, lon2):
 
 
 
-def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=10):
+def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=25):
 
     """
     Sends the drone to a GPS coordinate and waits until it arrives.
@@ -475,7 +475,7 @@ def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
 
 
 
-def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, timeout=10):
+def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, timeout=25):
     """
     Flies to a GPS coordinate while constantly running YOLO detection.
 
