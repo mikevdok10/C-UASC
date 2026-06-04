@@ -1153,6 +1153,20 @@ def packageDropBeanbag():
         print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
         return
 
+    arrived = goto_coordinate(
+        targetDropTestCoordinate.latitude,
+        targetDropTestCoordinate.longitude,
+        targetDropTestCoordinate.altitude,
+        arrival_radius=2.0,
+        timeout=60
+    )
+
+if not arrived:
+    print("[TARGET DROP] Failed to reach target area.")
+    AUTO_MODE = 0
+    set_mode("RTL")
+    return
+
     print("arrived at bulleye, begin detection") 
 
     # quick timer system to prevent terminal overflow 
