@@ -20,7 +20,7 @@ SERIAL_PRINT_INTERVAL = 1.0
 last_actual_pixhawk_mode = None 
 last_switch_state = None
 
-STREAM_HOST = "172.20.10.10"
+STREAM_HOST = "192.168.0.102"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -55,15 +55,14 @@ COPTER_MODES = {
     "LOITER":5,
     "RTL":6,
 }
+
 servo_busy = False
 last_trigger_time = 0
 TRIGGER_COOLDOWN = 5  
 mavlink_lock = threading.Lock()
 current_requested_pixhawk_mode = None
-
  
 SEARCH_ALTITUDE = 8.5
-
 
 
 def set_mode(mode_name):
@@ -124,8 +123,6 @@ def send_body_velocity(forward_m_s, right_m_s, down_m_s):
     )
 
 
-
-
 def move_forward_for_seconds(speed_m_s, seconds):
     print(f"Moving forward at {speed_m_s} m/s for {seconds} seconds")
 
@@ -137,7 +134,6 @@ def move_forward_for_seconds(speed_m_s, seconds):
 
     send_body_velocity(0, 0, 0)
     print("Stopped")
-
 
 
 def takeoff(target_altitude):
@@ -172,8 +168,6 @@ def takeoff(target_altitude):
         
         sleep(0.5)
             
-#comment 
-#comment 2
 
 def get_distance_meters(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
@@ -193,7 +187,6 @@ def get_distance_meters(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
 
     return R * c
-
 
 
 def goto_coordinate(latitude, longitude, altitude, arrival_radius=2.0, timeout=25):
@@ -281,11 +274,10 @@ TARGET_CLASSES = {
     "Target0", "Target1", "Target2", "Target3", "Target4", "Target5", "Target6", "Target7", "Target8", "Target9"
 }
 
+
 TARGET_LOG_CONFIDENCE = 0.6
 TARGET_LOG_DISTANCE_M = 2.0
 DETECTION_INTERVAL = 0.20
-
-
 
 
 def is_duplicate_target(class_name, lat, lon):
@@ -309,8 +301,6 @@ def is_duplicate_target(class_name, lat, lon):
             return True
 
     return False
-
-
 
 
 def write_target_to_blackbox(target_log):
@@ -343,8 +333,6 @@ def write_target_to_blackbox(target_log):
         file.write("-" * 60 + "\n\n")
 
     print(f"[BLACKBOX] Target written to {BLACKBOX_FILE}")
-
-
 
 
 def log_localized_target(detection):
@@ -411,8 +399,6 @@ def log_localized_target(detection):
     )
 
 
-
-
 def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
     """
     Creates a local x/y lawnmower path inside the bounding box of the given local points.
@@ -462,8 +448,6 @@ def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
             path.append((min_x, max_y))
 
     return path
-
-
 
 
 def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, timeout=25):
@@ -582,8 +566,6 @@ def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, ti
     return False
 
 
-
-
 def lawnmowerToGPS(localPath, ref_lat, ref_lon, altitude):
     if localPath is None:
         raise ValueError("localPath is None. lawnmowerPath() probably did not return a path.")
@@ -595,8 +577,6 @@ def lawnmowerToGPS(localPath, ref_lat, ref_lon, altitude):
         gps_path.append((lat, lon, altitude))
 
     return gps_path
-
-
 
 
 def lawnmowerSearch(localPoints, ref_lat, ref_lon, spacingBetweenPaths):
@@ -756,7 +736,6 @@ def camera_loop():
             sleep(0.1)
 
 
-
 def get_latest_frame(timeout=2.0):
     start = time()
     while time() - start < timeout:
@@ -767,7 +746,6 @@ def get_latest_frame(timeout=2.0):
     
     print("[CAMERA] Timeout waiting for latest frame.")
     return None 
-
 
 
 def build_gstreamer_pipeline():
@@ -781,6 +759,7 @@ def build_gstreamer_pipeline():
         "mpegtsmux ! "
         f"udpsink host={STREAM_HOST} port={Stream_Port} sync=false async=false"
     )
+
 
 def gstreamer_loop():
     if not Stream_enabled:
@@ -852,6 +831,7 @@ def zoom_frame(frame, zoom_factor=2.0):
 last_requested_mode = None 
 last_pixhawk_mode_command = None 
 
+
 def request_auto_mode(requested_mode):
     """Controls the AUTO_MODE state machine and requests Pixhawk mode changes as needed."""
     global AUTO_MODE, auto_ready
@@ -872,7 +852,6 @@ def request_auto_mode(requested_mode):
         print(f"[AUTO_MODE] Switching to {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unkown')} Mode.")
         return True
     
-
 
 def force_auto_mode(requested_mode):
     """
@@ -976,6 +955,7 @@ def keyboard_test_loop():
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
+
 # ============================================================
 # PAYLOAD / SERVO HELPERS
 # ============================================================
@@ -996,6 +976,7 @@ def trigger_servo(channel=9, pwm=1400):
             0, 0, 0, 0, 0
         )
 
+
 def drop_payload():
     """spins servo to open, then closes, keeps track of whether or not it is busy"""
     global servo_busy
@@ -1014,6 +995,7 @@ def drop_payload():
     servo_busy = False  # Reset busy state
   # Send command at 10Hz
 
+
 def try_drop_payload():
     """starts the payload drop thread if not already busy and cooldown has passed"""
     global servo_busy
@@ -1031,6 +1013,7 @@ def try_drop_payload():
     threading.Thread(target=drop_payload, daemon=True).start()
     return True
         
+
 # ============================================================
 # VISION / YOLO HELPERS
 # ============================================================
@@ -1057,6 +1040,7 @@ def get_classifier_label(class_results):
     class_name = str(names[class_id])
 
     return class_name, confidence
+
 
 def detect_target():
     """Captures a frame, runs detection and classification, and returns results."""
@@ -1114,6 +1098,7 @@ def detect_target():
             }
         
     return best_detection
+
 
 # ============================================================
 # AUTONOMOUS ROUTINES
@@ -1274,9 +1259,7 @@ def packageDeliverySafely():
 
     #Goes to the coordinates of the bullseye rough coordinates at a specifed altitude 
 
-    
 
-    
 
     #stops if the auto mode changes 
     if AUTO_MODE != 2:
@@ -1380,7 +1363,6 @@ def packageDeliverySafely():
             AUTO_MODE = 0
             set_mode("RTL")
             break
-
             
         sleep(0.05)
 
@@ -1518,6 +1500,7 @@ def estimate_target_gps_from_detection(detection):
         "meters_per_pixel_x": meters_per_pixel_x,
         "meters_per_pixel_y": meters_per_pixel_y
     }
+
 
 def get_bullseye_center_error(detection):
     """
@@ -1674,8 +1657,6 @@ def align_over_bullseye():
     return False
 
 
-    
-
 def autonomy_loop():
     global AUTO_MODE
     """
@@ -1776,7 +1757,6 @@ def handle_rc_channels(msg):
     
     global last_rc_print_time
 
-    
 
     if KEYBOARD_TEST_MODE:
         return
@@ -1944,3 +1924,6 @@ if __name__ == "__main__":
 
     while True:
         sleep(1)
+
+
+        
