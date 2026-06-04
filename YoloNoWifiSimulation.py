@@ -679,7 +679,7 @@ gpsCoordinate_2 = Waypoint(35.405761, -118.97065, 6)
 gpsCoordinate_3 = Waypoint(35.405874, -118.97057, 6)
 gpsCoordinate_4 = Waypoint(35.406004, -118.97073, 6)
 
-targetDropTestCoordinate = Waypoint(35.4060143, -118.970300, 10)
+PackageDropDeliveryCoordinate = Waypoint(25.4059323, -118.970579, 6)
 
 testaAutonCoordiante = None
 
@@ -755,6 +755,8 @@ def camera_loop():
             print(f"[CAMERA] Error capturing frame: {e}")
             sleep(0.1)
 
+
+
 def get_latest_frame(timeout=2.0):
     start = time()
     while time() - start < timeout:
@@ -765,6 +767,8 @@ def get_latest_frame(timeout=2.0):
     
     print("[CAMERA] Timeout waiting for latest frame.")
     return None 
+
+
 
 def build_gstreamer_pipeline():
     return (
@@ -1154,18 +1158,18 @@ def packageDropBeanbag():
         return
 
     arrived = goto_coordinate(
-        targetDropTestCoordinate.latitude,
-        targetDropTestCoordinate.longitude,
-        targetDropTestCoordinate.altitude,
+        PackageDropDeliveryCoordinate.latitude,
+        PackageDropDeliveryCoordinate.longitude,
+        PackageDropDeliveryCoordinate.altitude,
         arrival_radius=2.0,
         timeout=30
     )
 
-if not arrived:
-    print("[TARGET DROP] Failed to reach target area.")
-    AUTO_MODE = 0
-    set_mode("RTL")
-    return
+    if not arrived:
+        print("[TARGET DROP] Failed to reach target area.")
+        AUTO_MODE = 0
+        set_mode("RTL")
+        return
 
     print("arrived at bulleye, begin detection") 
 
@@ -1270,18 +1274,29 @@ def packageDeliverySafely():
 
     #Goes to the coordinates of the bullseye rough coordinates at a specifed altitude 
 
-    arrived = goto_coordinate(
-        targetDropTestCoordinate.latitude,
-        targetDropTestCoordinate.longitude,
-        targetDropTestCoordinate.altitude,
-        arrival_radius=2.0,
-        timeout=30
-    )
+    
+
+    
 
     #stops if the auto mode changes 
     if AUTO_MODE != 2:
         print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
         return
+    
+    arrived = goto_coordinate(
+        PackageDropDeliveryCoordinate.latitude,
+        PackageDropDeliveryCoordinate.longitude,
+        PackageDropDeliveryCoordinate.altitude,
+        arrival_radius=2.0,
+        timeout=30
+    )
+
+    if not arrived:
+        print("[TARGET DROP] Failed to reach target area.")
+        AUTO_MODE = 0
+        set_mode("RTL")
+        return
+
 
     print("arrived at bulleye, begin detection") 
 
@@ -1612,8 +1627,8 @@ def align_over_bullseye():
         meters_per_pixel_x = ground_width_m / Stream_Width
         meters_per_pixel_y = ground_height_m / Stream_Height
 
-        right_error_m = (error_x_pixels * meters_per_pixel_x)
-        forward_error_m = (error_y_pixels * meters_per_pixel_y) - 0.075
+        right_error_m = (error_x_pixels * meters_per_pixel_x)  
+        forward_error_m = (error_y_pixels * meters_per_pixel_y) - 0.1162
 
         # IMPORTANT:
         # These signs may need to be flipped depending on camera orientation.
@@ -1844,7 +1859,7 @@ def mavlink_loop():
     global last_actual_pixhawk_mode
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    master = mavutil.mavlink_connection("tcp:172.20.10.3:5762")
+    master = mavutil.mavlink_connection("tcp:192.168.137,1:5762")
     #master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
 
     print("Waiting for heartbeat...")
