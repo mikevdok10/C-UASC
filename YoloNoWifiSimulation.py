@@ -632,7 +632,7 @@ def lawnmowerSearch(localPoints, ref_lat, ref_lon, spacingBetweenPaths):
             lat,
             lon,
             arrival_radius=2.0,
-            timeout=90
+            timeout=25
         )
 
         sleep(0.5)
