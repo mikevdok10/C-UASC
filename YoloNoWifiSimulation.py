@@ -475,12 +475,7 @@ def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
 
 
 
-def goto_coordinate_while_detecting(
-    latitude,
-    longitude,
-    arrival_radius=2.0,
-    timeout=90
-):
+def goto_coordinate_while_detecting( latitude, longitude, arrival_radius=2.0, timeout=10):
     """
     Flies to a GPS coordinate while constantly running YOLO detection.
 
