@@ -182,6 +182,7 @@ def takeoff(target_altitude):
         sleep(0.5)
             
 #comment 
+#comment 2
 
 def get_distance_meters(lat1, lon1, lat2, lon2):
     """Returns distance in meters between two GPS coordinates."""
