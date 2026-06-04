@@ -1671,27 +1671,27 @@ def autonomy_loop():
 
         if mode == 1:
             print("running package drop")
-            sleep(2)
+            sleep(1)
             takeoff(9)
-            sleep(2)
+            sleep(1)
             packageDropBeanbag()
             sleep(0.1)
             continue
 
         elif mode == 2:
             print("Running package delviery")
-            sleep(2)
+            sleep(1)
             takeoff(9)
-            sleep(2)
+            sleep(1)
             packageDeliverySafely()
             sleep(0.1)
             continue
 
         elif mode == 3:
             print("running target localization")
-            sleep(2)
-            takeoff(6)
-            sleep(2)
+            sleep(1)
+            takeoff(7)
+            sleep(1)
             print("Starting Search")
             targetLocalization()
             sleep(0.1)
