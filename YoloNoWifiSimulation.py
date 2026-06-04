@@ -1158,7 +1158,7 @@ def packageDropBeanbag():
         targetDropTestCoordinate.longitude,
         targetDropTestCoordinate.altitude,
         arrival_radius=2.0,
-        timeout=60
+        timeout=30
     )
 
 if not arrived:
@@ -1275,7 +1275,7 @@ def packageDeliverySafely():
         targetDropTestCoordinate.longitude,
         targetDropTestCoordinate.altitude,
         arrival_radius=2.0,
-        timeout=60
+        timeout=30
     )
 
     #stops if the auto mode changes 
