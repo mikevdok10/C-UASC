@@ -100,15 +100,6 @@ def set_mode(mode_name):
         return False
 
 
-
-class Waypoint: 
-    def __init__(self, latitude, longitude, altitude):
-        self.latitude = latitude
-        self.longitude = longitude
-        self.altitude = altitude
- 
-
-
 def send_body_velocity(forward_m_s, right_m_s, down_m_s):
     """
     BODY_NED frame:
