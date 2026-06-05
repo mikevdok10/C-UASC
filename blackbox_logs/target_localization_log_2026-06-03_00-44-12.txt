@@ -1,0 +1,44 @@
+TARGET LOCALIZATION BLACKBOX LOG
+Created: 2026-06-03 00:44:12
+============================================================
+
+TARGET LOGGED
+class_name: Target8
+confidence: 1.0
+latitude: 35.4058626
+longitude: -118.9708398
+altitude: 0.0
+north_offset_m: 0.0
+east_offset_m: 0.0
+------------------------------------------------------------
+
+TARGET LOGGED
+class_name: Target5
+confidence: 1.0
+latitude: 35.405862600860615
+longitude: -118.97083979960647
+altitude: 0.001
+north_offset_m: 9.58034415217465e-05
+east_offset_m: 3.5706473608307886e-05
+------------------------------------------------------------
+
+TARGET LOGGED
+class_name: Target3
+confidence: 1.0
+latitude: 35.40586260072754
+longitude: -118.97083979967624
+altitude: 0.001
+north_offset_m: 8.098944979478073e-05
+east_offset_m: 2.9375328592788798e-05
+------------------------------------------------------------
+
+TARGET LOGGED
+class_name: Target6
+confidence: 1.0
+latitude: 35.4058627
+longitude: -118.9708399
+altitude: 0.0
+north_offset_m: 0.0
+east_offset_m: 0.0
+------------------------------------------------------------
+

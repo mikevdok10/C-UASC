@@ -1,7 +1,6 @@
 from picamera2 import Picamera2
 from ultralytics import YOLO
 import cv2
-# flask is a python web framework to build applications easily 
 import numpy as np
 from pymavlink import mavutil
 from gpiozero import AngularServo
@@ -9,13 +8,15 @@ from time import sleep, time
 import threading 
 from queue import Queue
 import math
+import os 
+from datetime import datetime
 
 last_rc_print_time = 0
 last_position_print_time = 0
 last_heartbeat_print_time = 0
 SERIAL_PRINT_INTERVAL = 1.0
 
-STREAM_HOST = "192.168.1.77"
+STREAM_HOST = "192.168.0.103"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -54,138 +55,227 @@ current_requested_pixhawk_mode = None
 
 
  
-SEARCH_ALTITUDE = 10.0
+SEARCH_ALTITUDE = 8.5
+
+def set_mode(mode_name):
+    modes = master.mode_mapping()
+    if mode_name not in modes:
+        raise Exception(f"Mode {mode_name} not available. Available modes: {list(modes.keys())}")
+
+    mode_id = modes[mode_name]
+
+    master.mav.set_mode_send(
+        master.target_system,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        mode_id
+    )
+
+    print(f"Mode set command sent: {mode_name}")
+
 class Waypoint: 
     def __init__(self, latitude, longitude, altitude):
         self.latitude = latitude
         self.longitude = longitude
         self.altitude = altitude
  
-PACKAGE_DELIVERY_WAYPOINTS = [
-    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Example waypoint 1
-    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Example waypoint 2
-    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE)   # Example waypoint 3
-]
-
-NAV_WAYPOINTS = [
-    Waypoint(35.409611, -118.972222, SEARCH_ALTITUDE),  # Waypoint 1
-    Waypoint(35.409000, -118.971900, SEARCH_ALTITUDE),  # Waypoint 2
-    Waypoint(35.408500, -118.971500, SEARCH_ALTITUDE),  # Waypoint 3
-    Waypoint(35.408000, -118.971000, SEARCH_ALTITUDE),  # Waypoint 4
-    Waypoint(35.407500, -118.970500, SEARCH_ALTITUDE),  # Waypoint 5
-    Waypoint(35.407000, -118.970000, SEARCH_ALTITUDE),  # Waypoint 6
-    Waypoint(35.406500, -118.969500, SEARCH_ALTITUDE),  # Waypoint 7
-]
-
-def get_polygon_origin(polygon_latlon):
-    """Uses the average polygon center as the local XY origin."""
-    avg_lat = sum(p[0] for p in polygon_latlon) / len(polygon_latlon)
-    avg_lon = sum(p[1] for p in polygon_latlon) / len(polygon_latlon)
-    return avg_lat, avg_lon
-
-
-def latlon_to_xy(lat, lon, origin_lat, origin_lon):
+def send_body_velocity(forward_m_s, right_m_s, down_m_s):
     """
-    Converts lat/lon to local x/y meters.
-    x = east/west meters
-    y = north/south meters
+    BODY_NED frame:
+    +X = forward
+    +Y = right
+    +Z = down
+    So up is negative Z.
     """
-    x = (lon - origin_lon) * 111320.0 * math.cos(math.radians(origin_lat))
-    y = (lat - origin_lat) * 111320.0
+
+    master.mav.set_position_target_local_ned_send(
+        0,
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_FRAME_BODY_NED,
+        0b0000111111000111,  # only velocity enabled
+        0, 0, 0,             # position ignored
+        forward_m_s,
+        right_m_s,
+        down_m_s,
+        0, 0, 0,             # acceleration ignored
+        0, 0                 # yaw, yaw_rate ignored
+    )
+
+
+def move_forward_for_seconds(speed_m_s, seconds):
+    print(f"Moving forward at {speed_m_s} m/s for {seconds} seconds")
+
+    start_time = time.time()
+
+    while time.time() - start_time < seconds:
+        send_body_velocity(speed_m_s, 0, 0)
+        time.sleep(0.1)  # 10 Hz
+
+    send_body_velocity(0, 0, 0)
+    print("Stopped")
+
+
+def goto_coordinate(latitude, longitude, altitude, seconds=5):
+    """
+    Moves the drone to a GPS coordinate using SET_POSITION_TARGET_GLOBAL_INT.
+    Assumes the drone is already in GUIDED mode, armed, and flying.
+    """
+
+    lat_int = int(latitude * 1e7)
+    lon_int = int(longitude * 1e7)
+
+    # Position enabled, velocity/acceleration/yaw ignored.
+    type_mask = 0b0000111111111000
+
+    print(f"Going to: lat={latitude}, lon={longitude}, alt={altitude}")
+
+    start_time = time.time()
+
+    while time.time() - start_time < seconds:
+        master.mav.set_position_target_global_int_send(
+            0,
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            type_mask,
+            lat_int,
+            lon_int,
+            altitude,
+            0, 0, 0,     # velocity ignored
+            0, 0, 0,     # acceleration ignored
+            0, 0         # yaw, yaw_rate ignored
+        )
+
+        time.sleep(0.2)
+
+
+def lawnmowerPath(coordinatePoints, spacingBetweenPaths):
+    """
+    Creates a local x/y lawnmower path inside the bounding box of the given local points.
+    coordinatePoints should be a list of (x, y) tuples in meters.
+    """
+
+    if coordinatePoints is None:
+        raise ValueError("coordinatePoints is None. Pass in a list of local (x, y) points.")
+
+    if len(coordinatePoints) == 0:
+        raise ValueError("coordinatePoints is empty.")
+
+    if spacingBetweenPaths <= 0:
+        raise ValueError("spacingBetweenPaths must be greater than 0.")
+
+    xs = [p[0] for p in coordinatePoints]
+    ys = [p[1] for p in coordinatePoints]
+
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+
+    path = []
+
+    y = min_y
+    direction = 1
+
+    while y <= max_y:
+        if direction == 1:
+            path.append((min_x, y))
+            path.append((max_x, y))
+        else:
+            path.append((max_x, y))
+            path.append((min_x, y))
+
+        y += spacingBetweenPaths
+        direction *= -1  # alternate direction each row
+
+    # Make sure the top edge gets covered even if spacing does not land exactly on max_y.
+    if path and path[-1][1] < max_y:
+        if direction == 1:
+            path.append((min_x, max_y))
+            path.append((max_x, max_y))
+        else:
+            path.append((max_x, max_y))
+            path.append((min_x, max_y))
+
+    return path
+
+
+def lawnmowerToGPS(localPath, ref_lat, ref_lon, altitude):
+    if localPath is None:
+        raise ValueError("localPath is None. lawnmowerPath() probably did not return a path.")
+
+    gps_path = []
+
+    for x, y in localPath:
+        lat, lon = local_to_gps(x, y, ref_lat, ref_lon)
+        gps_path.append((lat, lon, altitude))
+
+    return gps_path
+
+
+def lawnmowerSearch(localPoints, ref_lat, ref_lon, altitude, spacingBetweenPaths):
+    local_path = lawnmowerPath(localPoints, spacingBetweenPaths)
+    gps_path = lawnmowerToGPS(local_path, ref_lat, ref_lon, altitude)
+
+    print("Lawnmower GPS Path:")
+    for lat, lon, alt in gps_path:
+        print(lat, lon, alt)
+
+    for lat, lon, alt in gps_path:
+        goto_coordinate(lat, lon, alt, seconds=5)
+        time.sleep(1)
+
+    return gps_path
+
+
+class Waypoint:
+    def __init__(self, latitude, longitude, altitude):
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+
+
+radiusEarth = 6378137.0
+
+
+def gps_to_local(lat, lon, ref_lat, ref_lon):
+    x = math.radians(lon - ref_lon) * radiusEarth * math.cos(math.radians(ref_lat))
+    y = math.radians(lat - ref_lat) * radiusEarth
     return x, y
 
 
-def xy_to_latlon(x, y, origin_lat, origin_lon):
-    """Converts local x/y meters back to lat/lon."""
-    lat = origin_lat + (y / 111320.0)
-    lon = origin_lon + (x / (111320.0 * math.cos(math.radians(origin_lat))))
+def local_to_gps(x, y, ref_lat, ref_lon):
+    lat = ref_lat + math.degrees(y / radiusEarth)
+    lon = ref_lon + math.degrees(x / (radiusEarth * math.cos(math.radians(ref_lat))))
     return lat, lon
 
 
-def polygon_to_xy(polygon_latlon, origin_lat, origin_lon):
-    """Converts a polygon from lat/lon to local x/y meters."""
-    return [
-        latlon_to_xy(lat, lon, origin_lat, origin_lon)
-        for lat, lon in polygon_latlon
-    ]
+# GPS bounding box corners
+gpsCoordinate_1 = Waypoint(-35.3622723, 149.1657758, 2)
+gpsCoordinate_2 = Waypoint(-35.3623292, 149.1648316, 2)
+gpsCoordinate_3 = Waypoint(-35.3635847, 149.1650730, 2)
+gpsCoordinate_4 = Waypoint(-35.3634185, 149.1660118, 2)
 
+boundingBoxCorners = [
+    gpsCoordinate_1,
+    gpsCoordinate_2,
+    gpsCoordinate_3,
+    gpsCoordinate_4
+]
 
-def line_intersections_with_polygon(y, polygon_xy):
-    """
-    Finds where a horizontal scan line at y intersects the polygon.
-    Returns sorted x intersection points.
-    """
-    intersections = []
-    n = len(polygon_xy)
+ref_lat = boundingBoxCorners[0].latitude
+ref_lon = boundingBoxCorners[0].longitude
 
-    for i in range(n):
-        x1, y1 = polygon_xy[i]
-        x2, y2 = polygon_xy[(i + 1) % n]
+local_pts = [
+    gps_to_local(
+        wp.latitude,
+        wp.longitude,
+        ref_lat,
+        ref_lon
+    )
+    for wp in boundingBoxCorners
+]
 
-        # Skip horizontal edges to avoid double-counting
-        if y1 == y2:
-            continue
-
-        # Check if scanline crosses this edge
-        if (y >= min(y1, y2)) and (y < max(y1, y2)):
-            t = (y - y1) / (y2 - y1)
-            x = x1 + t * (x2 - x1)
-            intersections.append(x)
-
-    intersections.sort()
-    return intersections
-
-
-def generate_lawnmower_grid_polygon(polygon_latlon, spacing_meters, altitude, margin_meters=5.0):
-    """
-    Generates a lawnmower search pattern inside an arbitrary polygon.
-
-    polygon_latlon should be a list of (lat, lon) points in boundary order.
-    spacing_meters controls distance between search rows.
-    margin_meters keeps the generated path inside the polygon boundary.
-    """
-
-    origin_lat, origin_lon = get_polygon_origin(polygon_latlon)
-    polygon_xy = polygon_to_xy(polygon_latlon, origin_lat, origin_lon)
-
-    y_values = [p[1] for p in polygon_xy]
-    min_y = min(y_values) + margin_meters
-    max_y = max(y_values) - margin_meters
-
-    waypoints = []
-    row_number = 0
-    current_y = min_y
-
-    while current_y <= max_y:
-        intersections = line_intersections_with_polygon(current_y, polygon_xy)
-
-        # A normal convex polygon should give 2 intersections per scan line.
-        # More complex polygons can give more, so we handle them in pairs.
-        if len(intersections) >= 2:
-            for pair_index in range(0, len(intersections) - 1, 2):
-                x_start = intersections[pair_index] + margin_meters
-                x_end = intersections[pair_index + 1] - margin_meters
-
-                # Skip rows that become too short after margin is applied
-                if x_end <= x_start:
-                    continue
-
-                if row_number % 2 == 0:
-                    first_x, second_x = x_start, x_end
-                else:
-                    first_x, second_x = x_end, x_start
-
-                lat1, lon1 = xy_to_latlon(first_x, current_y, origin_lat, origin_lon)
-                lat2, lon2 = xy_to_latlon(second_x, current_y, origin_lat, origin_lon)
-
-                waypoints.append(Waypoint(lat1, lon1, altitude))
-                waypoints.append(Waypoint(lat2, lon2, altitude))
-
-                row_number += 1
-
-        current_y += spacing_meters
-
-    return waypoints
 
 dronePosition = {
 
@@ -225,7 +315,7 @@ def camera_loop():
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
             with camera_lock:
                 latest_frame = frame.copy()
@@ -293,7 +383,7 @@ def gstreamer_loop():
         if frame_rgb.shape[1] != Stream_Width or frame_rgb.shape[0] != Stream_Height:
             frame_rgb = cv2.resize(frame_rgb, (Stream_Width, Stream_Height))
 
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGBA2BGR)
         writer.write(frame_bgr)
 
         sleep_time = next_frame_time - time()
@@ -301,36 +391,6 @@ def gstreamer_loop():
             sleep(sleep_time)
 
         next_frame_time += frame_interval
-
-
-# ============================================================
-# GEOFENCE / LOCALIZATION SEARCH AREA
-# ============================================================
-
-GRID_SPACING_METERS = 20.0
-GEOFENCE_MARGIN_METERS = 5.0
-
-
-# Use your actual fly-zone boundary points.
-# IMPORTANT: Keep these in order around the boundary, either clockwise or counter-clockwise.
-GEOFENCE_POLYGON = [
-    (35.05932, -118.149),  # GF Point A
-    (35.06496, -118.156),  # GF Point B
-    (35.06062, -118.163),  # GF Point C
-    (35.05932, -118.163),  # GF Point D
-]
-
-LOCALIZATION_SEARCH_WAYPOINTS = generate_lawnmower_grid_polygon(
-    GEOFENCE_POLYGON,
-    GRID_SPACING_METERS,
-    SEARCH_ALTITUDE,
-    GEOFENCE_MARGIN_METERS
-)
-
-print(f"[SETUP] Generated {len(LOCALIZATION_SEARCH_WAYPOINTS)} localization search waypoints.")
-
-
-
 
 
 def zoom_frame(frame, zoom_factor=2.0):
@@ -353,68 +413,7 @@ def zoom_frame(frame, zoom_factor=2.0):
 
     return zoomed
 
-def has_position():
-    return (
-        dronePosition["latitude"] is not None and
-        dronePosition["longitude"] is not None and
-        dronePosition["altitude"] is not None
-    )
 
-def distance_meters(lat1, lon1, lat2, lon2):
-    """Calculate distance in meters between two GPS coordinates using Haversine formula."""
-    R = 6371000  # Earth radius in meters
-    lat1_rad = math.radians(lat1)
-    lon1_rad = math.radians(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
-
-    dlat = lat2_rad - lat1_rad
-    dlon = lon2_rad - lon1_rad
-
-    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    return R * c
-
-def set_flight_mode(mode):
-    global master
-
-    if master is None:
-        print("MAVLink connection not established.")
-        return False
-
-    mode = mode.upper()
-
-    if mode not in COPTER_MODES:
-        print(f"Unknown flight mode: {mode}")
-        return False
-
-    mode_id = COPTER_MODES[mode]
-
-    with mavlink_lock:
-        master.mav.command_long_send(
-            master.target_system,
-            master.target_component,
-            mavutil.mavlink.MAV_CMD_DO_SET_MODE,
-            0,
-            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-            mode_id,
-            0, 0, 0, 0, 0
-        )
-
-    print(f"[MODE] Requested mode change to {mode} ({mode_id})")
-    return True
-
-def request_pixhawk_mode(mode):
-    """Requests a flight mode change on the Pixhawk."""
-    global current_requested_pixhawk_mode
-
-    mode = mode.upper()
-
-    if mode != current_requested_pixhawk_mode:
-        success = set_flight_mode(mode)
-        if success:
-            current_requested_pixhawk_mode = mode
 
 def request_auto_mode(requested_mode):
     """Controls the AUTO_MODE state machine and requests Pixhawk mode changes as needed."""
@@ -432,83 +431,6 @@ def request_auto_mode(requested_mode):
         print(f"[AUTO_MODE] Already in {AUTO_MODE_NAMES.get(AUTO_MODE, 'Unknown')} Mode. Ignoring request to switch to {AUTO_MODE_NAMES.get(requested_mode, 'Unknown')} Mode.")
         sleep(0.1)
 
-def goto_location(lat, lon, alt):
-    if master is None:
-        print("MAVLink connection not established.")
-        return False
-
-    with mavlink_lock:
-        master.mav.set_position_target_global_int_send(
-            0,
-            master.target_system,
-            master.target_component,  # seq
-            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                0b110111111000,  # type_mask (only position)
-                int(lat * 1e7),  # latitude
-                int(lon * 1e7),  # longitude
-                alt,  # altitude in m
-                0, 0, 0,  # velocity (not used)
-                0, 0, 0,  # acceleration (not used)
-                0, 0  # yaw, yaw_rate (not used)
-        )
-    print(f"[GUIDED] Sent waypoint command to lat={lat}, lon={lon}, alt={alt}")
-    
-def send_local_velocity(vx, vy, vz, duration):
-    """Sends a velocity command in the local frame for a specified duration. vx=forward/back, vy=left/right, vz=up/down."""
-    if master is None:
-        print("MAVLink connection not established.")
-        return False
-
-    end_time = time() + duration
-    while time() < end_time:
-        with mavlink_lock:
-            master.mav.set_position_target_local_ned_send(
-                0,
-                master.target_system,
-                master.target_component,
-                mavutil.mavlink.MAV_FRAME_BODY_NED,
-                0b1100111000111,  # type_mask (only velocity)
-                0, 0, 0,  # x, y, z positions (not used)
-                vx, vy, vz,  # velocities in m/s
-                0, 0, 0,  # accelerations (not used)
-                0, 0  # yaw, yaw_rate (not used)
-            )
-        sleep(0.2)
-
-
-def wait_until_reached(target_lat, target_lon, target_alt, radius=2.0, timeout=60):
-    """Waits until the drone reaches a specified location, while periodically resending the target."""
-    start = time()
-    last_resend = 0
-
-    while time() - start < timeout:
-        if AUTO_MODE == 0:
-            print("[WAYPOINT] Cancelled by manual mode.")
-            return False
-
-        # Resend waypoint every 2 seconds
-        if time() - last_resend > 2.0:
-            goto_location(target_lat, target_lon, target_alt)
-            last_resend = time()
-
-        lat = dronePosition["latitude"]
-        lon = dronePosition["longitude"]
-
-        if lat is None or lon is None:
-            sleep(0.2)
-            continue
-
-        distance = distance_meters(lat, lon, target_lat, target_lon)
-        print(f"[WAYPOINT] Distance to target: {distance:.2f} meters")
-
-        if distance <= radius:
-            print("[WAYPOINT] Target reached.")
-            return True
-
-        sleep(0.5)
-
-    print("[WAYPOINT] Timeout reached without arriving at target.")
-    return False
 
 # ============================================================
 # PAYLOAD / SERVO HELPERS
@@ -598,7 +520,7 @@ def detect_target():
     if frame_rgb is None:
         sleep(0.05)
         return None
-    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGBA2BGR)
 
     frame = zoom_frame(frame, zoom_factor=2.0)
     frame = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -649,7 +571,7 @@ def routine_target_drop():
     global AUTO_MODE
     
     print("[ROUTINE] Starting Target Drop routine.")
-    request_pixhawk_mode("GUIDED")
+    set_mode("GUIDED")
 
     while AUTO_MODE == 1:
         detection = detect_target()
@@ -666,217 +588,14 @@ def routine_target_drop():
                 print(f"[TARGET DROP] Payload drop triggered for {class_name} (confidence: {confidence:.2f})")
 
                 AUTO_MODE = 0
-                request_pixhawk_mode("LOITER")
+                set_mode("LOITER")
                 """check with Peter if this the correct arming mode, and if we need to disarm after each drop or not. Also check if we need to switch back to stabilize after each drop or not, or if we can just stay in guided and keep sending the drop command when we see a target. """
                 return
         sleep(0.05)
 
     print("[ROUTINE] Exiting Target Drop routine.")
 
-def routine_package_delivery():
-    """AutoMode 2: Package Delivery routine - fly to predefined waypoints and drop payload."""
-    global AUTO_MODE
     
-    print("[ROUTINE] Starting Package Delivery routine.")
-    if not has_position():
-        print("[PACKAGE DELIVERY] Current position unknown, cannot start package delivery.")
-        AUTO_MODE = 0
-        return
-    request_pixhawk_mode("GUIDED")
-
-    for waypoint in PACKAGE_DELIVERY_WAYPOINTS:
-        if AUTO_MODE != 2:
-            print("[ROUTINE] Package Delivery routine cancelled.")
-            return
-        
-        print(f"[ROUTINE] Navigating to waypoint at lat={waypoint.latitude}, lon={waypoint.longitude}, alt={waypoint.altitude}")
-        goto_location(waypoint.latitude, waypoint.longitude, waypoint.altitude)
-        reached = False
-        waypoint_start = time()
-
-        while AUTO_MODE == 2 and not reached:
-            detection = detect_target()
-
-            if detection:
-                class_name = detection["class_name"]
-                confidence = detection["confidence"]
-
-                print(f"[PACKAGE DELIVERY] Detected {class_name} with confidence {confidence:.2f} while en route to waypoint.")
-
-                if class_name == "Bullseye" and confidence > 0.8:
-                    print("[PACKAGE DELIVERY] Target detected near waypoint, attempting payload drop...")
-                    if try_drop_payload():
-                        print("[PACKAGE DELIVERY] Payload drop triggered by target detection.")
-                    
-                    lat = dronePosition["latitude"]
-                    lon = dronePosition["longitude"]
-
-                    if lat is not None and lon is not None:
-                        goto_location(lat, lon, SEARCH_ALTITUDE)
-                        sleep(1)
-                    
-
-                    AUTO_MODE = 0
-                    request_pixhawk_mode("LOITER")
-                    return
-            lat = dronePosition["latitude"]
-            lon = dronePosition["longitude"]
-            if lat is not None and lon is not None:
-                dist = distance_meters(lat, lon, waypoint.latitude, waypoint.longitude)
-                if dist < 2.0:
-                    reached = True
-                    print("[PACKAGE DELIVERY] Waypoint reached.")
-            
-            if time() - waypoint_start > 40:
-                print("[PACKAGE DELIVERY] Timeout reached while trying to reach waypoint.")
-                reached = True
-                sleep(0.1)
-
-    print("[ROUTINE] Package Delivery routine completed all waypoints.")
-    AUTO_MODE = 0
-    request_pixhawk_mode("LOITER")
-
-def routine_target_localization():
-    """
-    AUTO_MODE 3:
-    Moves through a lawnmower search grid inside the geofence.
-    While moving, it constantly checks for Bullseye.
-    When Bullseye is detected, it records the drone's current GPS position.
-    """
-
-    global AUTO_MODE
-
-    print("[ROUTINE] Target Localization lawnmower search started.")
-
-    if not has_position():
-        print("[LOCALIZE] No GPS position yet. Cannot start localization search.")
-        AUTO_MODE = 0
-        return
-
-    request_pixhawk_mode("GUIDED")
-    print(f"[LOCALIZE] Generated {len(LOCALIZATION_SEARCH_WAYPOINTS)} search waypoints.")
-
-
-    for index, wp in enumerate(LOCALIZATION_SEARCH_WAYPOINTS, start=1):
-        if AUTO_MODE != 3:
-            print("[LOCALIZE] Localization search cancelled.")
-            return
-
-        print(f"[LOCALIZE] Going to search waypoint {index}/{len(LOCALIZATION_SEARCH_WAYPOINTS)}")
-        print(f"[LOCALIZE] lat={wp.latitude}, lon={wp.longitude}, alt={wp.altitude}")
-
-        goto_location(wp.latitude, wp.longitude, wp.altitude)
-
-        waypoint_start = time()
-        last_resend = 0
-
-        while AUTO_MODE == 3:
-            # Keep resending the current waypoint every 2 seconds
-            if time() - last_resend > 2.0:
-                goto_location(wp.latitude, wp.longitude, wp.altitude)
-                last_resend = time()
-
-            # Run vision while traveling
-            detection = detect_target()
-
-            if detection is not None:
-                class_name = detection["class_name"]
-                confidence = detection["confidence"]
-
-                print(f"[LOCALIZE] Saw {class_name} confidence={confidence:.2f}")
-
-                if class_name == "Bullseye" and confidence > 0.80:
-                    lat = dronePosition["latitude"]
-                    lon = dronePosition["longitude"]
-                    alt = dronePosition["altitude"]
-
-                    if lat is not None and lon is not None:
-                        target_data = {
-                            "class_name": class_name,
-                            "confidence": confidence,
-                            "drone_latitude": lat,
-                            "drone_longitude": lon,
-                            "drone_altitude": alt,
-                            "time": time(),
-                        }
-
-                        localized_targets.append(target_data)
-
-                        print("[LOCALIZE] Target recorded:")
-                        print(target_data)
-
-                        AUTO_MODE = 0
-                        request_pixhawk_mode("LOITER")
-                        return
-
-            # Check if waypoint reached
-            current_lat = dronePosition["latitude"]
-            current_lon = dronePosition["longitude"]
-
-            if current_lat is not None and current_lon is not None:
-                distance = distance_meters(
-                    current_lat,
-                    current_lon,
-                    wp.latitude,
-                    wp.longitude
-                )
-
-                print(f"[LOCALIZE] Distance to search waypoint: {distance:.2f} meters")
-
-                if distance <= 2.0:
-                    print(f"[LOCALIZE] Reached search waypoint {index}.")
-                    break
-
-            # Timeout for this waypoint
-            if time() - waypoint_start > 60:
-                print(f"[LOCALIZE] Timeout on search waypoint {index}. Moving to next.")
-                break
-
-            sleep(0.1)
-
-    print("[LOCALIZE] Finished lawnmower search. Switching to LOITER.")
-    AUTO_MODE = 0
-    request_pixhawk_mode("LOITER")
-    
-def routine_waypoint_navigation():
-    global AUTO_MODE
-
-    print("[ROUTINE] Waypoint Navigation started.")
-
-    if not has_position():
-        print("[WAYPOINT] No GPS position yet. Cannot start waypoint navigation.")
-        AUTO_MODE = 0
-        return
-
-    request_pixhawk_mode("GUIDED")
-
-    for index, wp in enumerate(NAV_WAYPOINTS, start=1):
-        if AUTO_MODE != 4:
-            print("[WAYPOINT] Cancelled.")
-            return
-
-        print(f"[WAYPOINT] Going to waypoint {index}/{len(NAV_WAYPOINTS)}")
-        print(f"[WAYPOINT] lat={wp.latitude}, lon={wp.longitude}, alt={wp.altitude}")
-
-        goto_location(wp.latitude, wp.longitude, wp.altitude)
-
-        reached = wait_until_reached(
-            wp.latitude,
-            wp.longitude,
-            wp.altitude,
-            radius=2.0,
-            timeout=60,
-        )
-
-        if not reached:
-            print(f"[WAYPOINT] Failed to reach waypoint {index}. Moving on.")
-        else:
-            print(f"[WAYPOINT] Reached waypoint {index}.")
-
-    print("[WAYPOINT] Route complete. Switching to LOITER.")
-    AUTO_MODE = 0
-    request_pixhawk_mode("LOITER")
-
 
 def autonomy_loop():
     """
@@ -903,13 +622,18 @@ def autonomy_loop():
             routine_target_drop()
 
         elif mode == 2:
-            routine_package_delivery()
+            sleep(0.1)
+            continue
 
         elif mode == 3:
-            routine_target_localization()
+            goto_coordinate(local_pts[0][0])
+            lawnmowerSearch(local_pts, ref_lat, ref_lon, SEARCH_ALTITUDE, spacingBetweenPaths=5.0)
+            sleep(0.1)
+            continue
 
         elif mode == 4:
-            routine_waypoint_navigation()
+            sleep(0.1) 
+            continue
 
         else:
             print(f"[AUTONOMY] Unknown AUTO_MODE: {mode}")
@@ -969,13 +693,13 @@ def handle_rc_channels(msg):
     # SB low: emergency/recovery RTL
     if flight_mode_switch < 1300:
         request_auto_mode(0)
-        request_pixhawk_mode("LOITER")
+        set_mode("LOITER")
         return
 
     # SB middle: pilot controlled AltHold
     if flight_mode_switch > 1700:
         request_auto_mode(0)
-        request_pixhawk_mode("RTL")  # or ALT_HOLD if you want to allow manual stick control, but GUIDED is safer for switching in and out of autonomous modes
+        set_mode("RTL")  # or ALT_HOLD if you want to allow manual stick control, but GUIDED is safer for switching in and out of autonomous modes
         return
     
     requested_mode = 0
@@ -997,9 +721,9 @@ def handle_rc_channels(msg):
     request_auto_mode(requested_mode)
 
     if requested_mode == 0:
-        request_pixhawk_mode("LOITER")
+        set_mode("LOITER")
     else:
-        request_pixhawk_mode("GUIDED")
+        set_mode("GUIDED")
 
 
 def mavlink_loop():
@@ -1083,8 +807,8 @@ if __name__ == "__main__":
 
     threading.Thread(target=camera_loop, daemon=True).start()
     threading.Thread(target=gstreamer_loop, daemon=True).start()
-    threading.Thread(target=mavlink_loop, daemon=True).start()
-    threading.Thread(target=autonomy_loop, daemon=True).start()
+    #threading.Thread(target=mavlink_loop, daemon=True).start()
+    #threading.Thread(target=autonomy_loop, daemon=True).start()
 
     while True:
         sleep(1)
