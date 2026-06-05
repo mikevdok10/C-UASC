@@ -651,12 +651,12 @@ def local_to_gps(x, y, ref_lat, ref_lon):
 
 
 # GPS bounding box corners
-gpsCoordinate_1 = Waypoint(35.4043003, -119.13284, 6)
-gpsCoordinate_2 = Waypoint(35.4042982, -119.132655, 6)
-gpsCoordinate_3 = Waypoint(35.4044927, -119.132668, 6)
-gpsCoordinate_4 = Waypoint(35.4044752, -119.132840, 6)
+gpsCoordinate_1 = Waypoint(35.4043003, -119.13284, 8)
+gpsCoordinate_2 = Waypoint(35.4042982, -119.132655, 8)
+gpsCoordinate_3 = Waypoint(35.4044927, -119.132668, 8)
+gpsCoordinate_4 = Waypoint(35.4044752, -119.132840, 8)
 
-PackageDropDeliveryCoordinate = Waypoint(35.4043616, -119.132762, 4)
+PackageDropDeliveryCoordinate = Waypoint(35.4043616, -119.132762, 6)
 
 testaAutonCoordiante = None
 
@@ -1341,7 +1341,7 @@ def packageDeliverySafely():
             lowringToTarget =  goto_coordinate(
                 PackageDropDeliveryCoordinate.latitude,
                 PackageDropDeliveryCoordinate.longitude,
-                1,
+                1.5,
                 arrival_radius=1.5,
                 timeout=15
                 )
