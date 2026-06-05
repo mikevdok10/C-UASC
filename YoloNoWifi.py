@@ -16,7 +16,7 @@ last_position_print_time = 0
 last_heartbeat_print_time = 0
 SERIAL_PRINT_INTERVAL = 1.0
 
-STREAM_HOST = "192.168.0.100"
+STREAM_HOST = "192.168.0.103"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480

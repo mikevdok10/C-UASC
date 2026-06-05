@@ -18,7 +18,7 @@ DETECT_CONFIDENCE = 0.25
 CLASSIFY_CONFIDENCE = 0.6
 
 
-def zoom_frame(frame, zoom_factor=2.0):
+def zoom_frame(frame, zoom_factor=1.0):
     h, w, _ = frame.shape
 
     new_w = int(w / zoom_factor)
@@ -85,7 +85,7 @@ while True:
     frame_bgr = frame_rgb.copy()
 
     # Same zoom you use in your main drone code
-    frame_bgr = zoom_frame(frame_bgr, zoom_factor=2.0)
+    frame_bgr = zoom_frame(frame_bgr, zoom_factor=1.0)
 
     frame_bgr = np.ascontiguousarray(frame_bgr, dtype=np.uint8)
 

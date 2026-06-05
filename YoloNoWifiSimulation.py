@@ -20,7 +20,7 @@ SERIAL_PRINT_INTERVAL = 1.0
 last_actual_pixhawk_mode = None 
 last_switch_state = None
 
-STREAM_HOST = "172.20.10.1"
+STREAM_HOST = "192.168.0.103"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -37,7 +37,7 @@ camera_lock = threading.Lock()
 AUTO_MODE = 0
 auto_ready = True 
 
-KEYBOARD_TEST_MODE = True
+KEYBOARD_TEST_MODE = False
 auto_mode_lock = threading.Lock()
 
 master = None
@@ -275,7 +275,7 @@ TARGET_CLASSES = {
 }
 
 
-TARGET_LOG_CONFIDENCE = 0.6
+TARGET_LOG_CONFIDENCE = 0.75
 TARGET_LOG_DISTANCE_M = 2.0
 DETECTION_INTERVAL = 0.20
 
@@ -380,9 +380,6 @@ def log_localized_target(detection):
         "confidence": confidence,
         "latitude": target_lat,
         "longitude": target_lon,
-        "altitude": estimated["altitude"],
-        "north_offset_m": estimated["north_offset_m"],
-        "east_offset_m": estimated["east_offset_m"],
     }
 
     localized_targets.append(target_log)
@@ -960,7 +957,7 @@ def keyboard_test_loop():
 # PAYLOAD / SERVO HELPERS
 # ============================================================
 
-def trigger_servo(channel=9, pwm=1400):
+def trigger_servo(channel=9, pwm=1200):
     if master is None:
         print("[SERVO]MAVLink connection not established.")
         return  
@@ -1083,7 +1080,7 @@ def detect_target():
 
         class_name, confidence = get_classifier_label(class_results)
 
-        if confidence < 0.65:
+        if confidence < 0.85:
                     continue
         
         print(f"[VISION] Classifier says: {class_name}, confidence={confidence:.2f}")
@@ -1409,6 +1406,59 @@ def targetLocalization():
         AUTO_MODE = 0
         set_mode("RTL")
 
+def autonomous_servo_test():
+    """
+    Bench test:
+    - No takeoff
+    - No movement
+    - Just watches camera feed
+    - Opens/closes servo whenever Bullseye is detected
+    """
+
+    global AUTO_MODE
+
+    print("[SERVO TEST] Starting Bullseye servo test.")
+
+    last_detection_print = 0
+
+    while AUTO_MODE == 4:
+
+        detection = detect_target()
+
+        current_time = time()
+
+        if detection is None:
+            if current_time - last_detection_print > 1:
+                print("[SERVO TEST] No target detected.")
+                last_detection_print = current_time
+
+            sleep(0.1)
+            continue
+
+        class_name = detection["class_name"]
+        confidence = detection["confidence"]
+
+        print(
+            f"[SERVO TEST] Detected {class_name} "
+            f"confidence={confidence:.2f}"
+        )
+
+        if class_name == "Bullseye" and confidence > 0.75:
+
+            print("[SERVO TEST] Bullseye found. Triggering servo.")
+
+            if try_drop_payload():
+                print("[SERVO TEST] Servo triggered.")
+            else:
+                print("[SERVO TEST] Servo busy or cooldown active.")
+
+            # Prevent spamming detections
+            sleep(2)
+
+        sleep(0.1)
+
+    print("[SERVO TEST] Exiting.")
+
 
 def estimate_target_gps_from_detection(detection):
     """
@@ -1683,7 +1733,7 @@ def autonomy_loop():
         if mode == 1:
             print("running package drop")
             sleep(1)
-            takeoff(5)
+            takeoff(8)
             sleep(1)
             packageDropBeanbag()
             sleep(0.1)
@@ -1692,7 +1742,7 @@ def autonomy_loop():
         elif mode == 2:
             print("Running package delviery")
             sleep(1)
-            takeoff(5)
+            takeoff(8)
             sleep(1)
             packageDeliverySafely()
             sleep(0.1)
@@ -1701,7 +1751,7 @@ def autonomy_loop():
         elif mode == 3:
             print("running target localization")
             sleep(1)
-            takeoff(7)
+            takeoff(8)
             sleep(1)
             print("Starting Search")
             targetLocalization()
@@ -1709,18 +1759,14 @@ def autonomy_loop():
             continue
 
         elif mode == 4:
-            
-            print("Running test autonomous Routine")
-            set_mode("GUIDED")
-            takeoff(5)
-            #goto_coordinate(testaAutonCoordiante)
-            move_forward_for_seconds(1,5)
-            #try_drop_payload() 
-            sleep(3)
-            AUTO_MODE = 0
-            set_mode("RTL")      
-            
-            sleep(0.1) 
+
+            print("[AUTO MODE 4] Bullseye Servo Test")
+
+            set_mode("GUIDED")   # optional
+
+            autonomous_servo_test()
+
+            sleep(0.1)
             continue
 
         else:
@@ -1840,8 +1886,8 @@ def mavlink_loop():
     global last_actual_pixhawk_mode
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    master = mavutil.mavlink_connection("tcp:172.20.10.3:5762")
-    #master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
+    #master = mavutil.mavlink_connection("tcp:192.168.1.4:5762")
+    master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
 
     print("Waiting for heartbeat...")
     master.wait_heartbeat()
@@ -1872,7 +1918,8 @@ def mavlink_loop():
             sleep(2)
 
             with mavlink_lock:
-                master = mavutil.mavlink_connection("tcp:172.20.10.35762")
+                #master = mavutil.mavlink_connection("tcp:192.168.1.4:5762")
+                master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
                 master.wait_heartbeat()
 
             print("[MAVLINK] Reconnected.")
