@@ -20,7 +20,7 @@ SERIAL_PRINT_INTERVAL = 1.0
 last_actual_pixhawk_mode = None 
 last_switch_state = None
 
-STREAM_HOST = "192.168.0.102"
+STREAM_HOST = "172.20.10.1"
 Stream_Port = 5600
 Stream_Width = 640
 Stream_Height = 480
@@ -654,12 +654,12 @@ def local_to_gps(x, y, ref_lat, ref_lon):
 
 
 # GPS bounding box corners
-gpsCoordinate_1 = Waypoint(35.405923, -118.97084, 6)
-gpsCoordinate_2 = Waypoint(35.405761, -118.97065, 6)
-gpsCoordinate_3 = Waypoint(35.405874, -118.97057, 6)
-gpsCoordinate_4 = Waypoint(35.406004, -118.97073, 6)
+gpsCoordinate_1 = Waypoint(35.4043003, -119.13284, 6)
+gpsCoordinate_2 = Waypoint(35.4042982, -119.132655, 6)
+gpsCoordinate_3 = Waypoint(35.4044927, -119.132668, 6)
+gpsCoordinate_4 = Waypoint(35.4044752, -119.132840, 6)
 
-PackageDropDeliveryCoordinate = Waypoint(25.4059323, -118.970579, 6)
+PackageDropDeliveryCoordinate = Waypoint(35.4043616, -119.132762, 4)
 
 testaAutonCoordiante = None
 
@@ -807,7 +807,7 @@ def gstreamer_loop():
         next_frame_time += frame_interval
 
 
-def zoom_frame(frame, zoom_factor=2.0):
+def zoom_frame(frame, zoom_factor=1.0):
     h, w, _ = frame.shape
 
     # Compute new cropped size
@@ -991,7 +991,7 @@ def drop_payload():
     sleep(1)
 
     print("[DROP] Closing servo...")
-    trigger_servo(channel=9, pwm=600)   # Closed position
+    trigger_servo(channel=9, pwm=800)   # Closed position
     servo_busy = False  # Reset busy state
   # Send command at 10Hz
 
@@ -1051,7 +1051,7 @@ def detect_target():
         return None
     frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    frame = zoom_frame(frame, zoom_factor=2.0)
+    frame = zoom_frame(frame, zoom_factor=1.0)
     frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
     # Run detector on the first frame that comes in 
@@ -1124,24 +1124,20 @@ def getBullseyeCenterLocation(detection):
 
 
 def packageDropBeanbag():
-   #Goes to a specified coordinate
-   #runs detection Loop
-   #aligns over the target and drops the payload 
-   #initiates RTL 
+    
 
     global AUTO_MODE
 
-    print("Starting Target drop") 
-    #Sets mode to guided mode to star the routine 
+    print("[TARGET DROP] Starting target drop routine.")
+
     set_mode("GUIDED")
+    sleep(1)
 
-
-
-    #stops if the auto mode changes 
     if AUTO_MODE != 1:
-        print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
+        print("[TARGET DROP] AUTO_MODE changed before starting. Exiting.")
         return
 
+    # 1. Go to rough bullseye location
     arrived = goto_coordinate(
         PackageDropDeliveryCoordinate.latitude,
         PackageDropDeliveryCoordinate.longitude,
@@ -1156,22 +1152,41 @@ def packageDropBeanbag():
         set_mode("RTL")
         return
 
-    print("arrived at bulleye, begin detection") 
+    print("[TARGET DROP] Arrived at rough bullseye location.")
 
-    # quick timer system to prevent terminal overflow 
+    if AUTO_MODE != 1:
+        print("[TARGET DROP] AUTO_MODE changed after arrival. Exiting.")
+        return
+
+    # 2. Lower drone to detection/drop altitude
+    print("[TARGET DROP] Lowering drone to 2 meters.")
+
+    lowered = goto_coordinate(
+        PackageDropDeliveryCoordinate.latitude,
+        PackageDropDeliveryCoordinate.longitude,
+        8,
+        arrival_radius=1.5,
+        timeout=15
+    )
+
+    if not lowered:
+        print("[TARGET DROP] Failed to lower to drop altitude.")
+        AUTO_MODE = 0
+        set_mode("RTL")
+        return
+
+    print("[TARGET DROP] Drone lowered. Beginning detection loop.")
+
     last_detector_test_print_time = 0
     last_no_detection_print_time = 0
 
-    # this will always run as long as the AUTO MODE is left in target drop mode
-    #will only end if a bullseye is detected 
     while AUTO_MODE == 1:
         current_time = time()
 
         if current_time - last_detector_test_print_time >= 1.0:
-            print("[TARGET DROP TEST] Detection loop is running...")
+            print("[TARGET DROP] Detection loop is running...")
             last_detector_test_print_time = current_time
 
-        # starts the detection loop 
         detection = detect_target()
 
         if detection is None:
@@ -1187,61 +1202,46 @@ def packageDropBeanbag():
 
         print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
 
-        # This is only going to run the code if the Bullseye object is detected
-        #The detector must have a confidence of 0.8 or higher to be used 
-        if class_name == "Bullseye" and confidence > 0.8:
-            print("bullseye found")
+        if class_name == "Bullseye" and confidence > 0.75:
+            print("[TARGET DROP] Bullseye found. Starting alignment.")
 
-            # starts to align over the bullseye 
+            
+
             checkIfAligned = align_over_bullseye()
 
             if not checkIfAligned:
+                print("[TARGET DROP] Alignment failed or AUTO_MODE changed.")
+                send_body_velocity(0, 0, 0)
                 return
-            
-            print("target aligned")
 
-            set_mode("LAND")
-            
-            while AUTO_MODE == 1:
-                currentAltitude = dronePosition["altitude"]
+            print("[TARGET DROP] Target aligned. Dropping payload.")
 
-                #this drops the payload 
-                #after dorpping the payload, it changes to RTL and goes home 
-                if currentAltitude is None:
-                    print("waiting for altitude...")
-                    continue
+            lowringToTarget =  goto_coordinate(
+                PackageDropDeliveryCoordinate.latitude,
+                PackageDropDeliveryCoordinate.longitude,
+                3,
+                arrival_radius=1.5,
+                timeout=15
+                )
 
-                print("descending")
+            if not lowringToTarget:
+                AUTO_MODE = 0
+                set_mode("RTL")
 
-                if currentAltitude <= 2.5:
-                    break
-                sleep(0.5)
             if try_drop_payload():
-                print("[TARGET DROP] Payload Dropped")
-                            
-            set_mode("GUIDED")
-            goto_coordinate(dronePosition["latitude"], dronePosition["longitude"], 10)   
-            AUTO_MODE = 0
-            while AUTO_MODE == 1:
-                currentAltitude = dronePosition["altitude"]
+                print("[TARGET DROP] Payload drop triggered.")
+                sleep(2)
+            else:
+                print("[TARGET DROP] Payload drop did not trigger. Servo may be busy or in cooldown.")
 
-                if currentAltitude is None:
-                    print("waiting for altitude...")
-                    continue
-                
-                print ("ascending")
-
-                if currentAltitude >= 9.5:
-                    print("starting to RTL")
-                    break
-                sleep(0.5)
+            print("[TARGET DROP] Returning to launch.")
             AUTO_MODE = 0
             set_mode("RTL")
             break
 
-            
         sleep(0.05)
 
+    send_body_velocity(0, 0, 0)
     print("[ROUTINE] Exiting Target Drop routine.")
     
 
@@ -1253,19 +1253,16 @@ def packageDeliverySafely():
 
     global AUTO_MODE
 
-    print("Starting Target drop") 
-    #Sets mode to guided mode to star the routine 
+    print("[TARGET DROP] Starting target DELIVERY SAFELY routine.")
+
     set_mode("GUIDED")
+    sleep(1)
 
-    #Goes to the coordinates of the bullseye rough coordinates at a specifed altitude 
-
-
-
-    #stops if the auto mode changes 
-    if AUTO_MODE != 2:
-        print("[TARGET DROP] AUTO_MODE changed before detection. Exiting.")
+    if AUTO_MODE != 1:
+        print("[TARGET DROP] AUTO_MODE changed before starting. Exiting.")
         return
-    
+
+    # 1. Go to rough bullseye location
     arrived = goto_coordinate(
         PackageDropDeliveryCoordinate.latitude,
         PackageDropDeliveryCoordinate.longitude,
@@ -1280,23 +1277,41 @@ def packageDeliverySafely():
         set_mode("RTL")
         return
 
+    print("[TARGET DROP] Arrived at rough bullseye location.")
 
-    print("arrived at bulleye, begin detection") 
+    if AUTO_MODE != 1:
+        print("[TARGET DROP] AUTO_MODE changed after arrival. Exiting.")
+        return
 
-    # quick timer system to prevent terminal overflow 
+    # 2. Lower drone to detection/drop altitude
+    print("[TARGET DROP] Lowering drone to 2 meters.")
+
+    lowered = goto_coordinate(
+        PackageDropDeliveryCoordinate.latitude,
+        PackageDropDeliveryCoordinate.longitude,
+        8,
+        arrival_radius=1.5,
+        timeout=15
+    )
+
+    if not lowered:
+        print("[TARGET DROP] Failed to lower to drop altitude.")
+        AUTO_MODE = 0
+        set_mode("RTL")
+        return
+
+    print("[TARGET DROP] Drone lowered. Beginning detection loop.")
+
     last_detector_test_print_time = 0
     last_no_detection_print_time = 0
 
-    # this will always run as long as the AUTO MODE is left in target drop mode
-    # will only end if a bullseye is detected 
-    while AUTO_MODE == 2:
+    while AUTO_MODE == 1:
         current_time = time()
 
         if current_time - last_detector_test_print_time >= 1.0:
-            print("[TARGET DROP TEST] Detection loop is running...")
+            print("[TARGET DROP] Detection loop is running...")
             last_detector_test_print_time = current_time
 
-        # starts the detection loop 
         detection = detect_target()
 
         if detection is None:
@@ -1312,60 +1327,46 @@ def packageDeliverySafely():
 
         print(f"[TARGET DROP] Detected {class_name} with confidence {confidence:.2f}")
 
-        # This is only going to run the code if the Bullseye object is detected
-        #The detector must have a confidence of 0.8 or higher to be used 
         if class_name == "Bullseye" and confidence > 0.75:
-            print("bullseye found")
+            print("[TARGET DROP] Bullseye found. Starting alignment.")
 
-            # starts to align over the bullseye 
+            
+
             checkIfAligned = align_over_bullseye()
 
             if not checkIfAligned:
+                print("[TARGET DROP] Alignment failed or AUTO_MODE changed.")
+                send_body_velocity(0, 0, 0)
                 return
-            
-            print("target aligned")
 
-            set_mode("LAND")
-            
-            while AUTO_MODE == 2:
-                currentAltitude = dronePosition["altitude"]
+            print("[TARGET DROP] Target aligned. Dropping payload.")
 
-                #this drops the payload 
-                #after dorpping the payload, it changes to RTL and goes home 
-                if currentAltitude is None:
-                    print("waiting for altitude...")
-                    continue
+            lowringToTarget =  goto_coordinate(
+                PackageDropDeliveryCoordinate.latitude,
+                PackageDropDeliveryCoordinate.longitude,
+                1,
+                arrival_radius=1.5,
+                timeout=15
+                )
 
-                print("descending")
+            if not lowringToTarget:
+                AUTO_MODE = 0
+                set_mode("RTL")
 
-                if currentAltitude <= 0.5:
-                    break
-                sleep(0.5)
             if try_drop_payload():
-                print("[TARGET DROP] Payload Dropped")
-                            
-            set_mode("GUIDED")
-            goto_coordinate(dronePosition["latitude"], dronePosition["longitude"], 10)   
-            AUTO_MODE = 0
-            while AUTO_MODE == 2:
-                currentAltitude = dronePosition["altitude"]
+                print("[TARGET DROP] Payload drop triggered.")
+                sleep(2)
+            else:
+                print("[TARGET DROP] Payload drop did not trigger. Servo may be busy or in cooldown.")
 
-                if currentAltitude is None:
-                    print("waiting for altitude...")
-                    continue
-                
-                print ("ascending")
-
-                if currentAltitude >= 9.5:
-                    print("starting to RTL")
-                    break
-                sleep(0.5)
+            print("[TARGET DROP] Returning to launch.")
             AUTO_MODE = 0
             set_mode("RTL")
             break
-            
+
         sleep(0.05)
 
+    send_body_velocity(0, 0, 0)
     print("[ROUTINE] Exiting Target Drop routine.")
 
 
@@ -1446,7 +1447,7 @@ def estimate_target_gps_from_detection(detection):
     CAMERA_VERTICAL_FOV_DEG = 38.73
 
     # Your detect_target() zooms the frame by 2.0
-    zoomFactor = 2.0
+    zoomFactor = 1.0
 
     x1, y1, x2, y2 = detection["bbox"]
 
@@ -1552,7 +1553,7 @@ def align_over_bullseye():
     centered_frame_count = 0
     REQUIRED_CENTERED_FRAMES = 5
 
-    zoomFactor = 2.0
+    zoomFactor = 1.0
 
     last_print_time = 0
 
@@ -1682,7 +1683,7 @@ def autonomy_loop():
         if mode == 1:
             print("running package drop")
             sleep(1)
-            takeoff(9)
+            takeoff(5)
             sleep(1)
             packageDropBeanbag()
             sleep(0.1)
@@ -1691,7 +1692,7 @@ def autonomy_loop():
         elif mode == 2:
             print("Running package delviery")
             sleep(1)
-            takeoff(9)
+            takeoff(5)
             sleep(1)
             packageDeliverySafely()
             sleep(0.1)
@@ -1839,7 +1840,7 @@ def mavlink_loop():
     global last_actual_pixhawk_mode
 
     # Opens a serial USB connection between the Pixhawk and Raspberry Pi
-    master = mavutil.mavlink_connection("tcp:192.168.137,1:5762")
+    master = mavutil.mavlink_connection("tcp:172.20.10.3:5762")
     #master = mavutil.mavlink_connection("/dev/ttyACM0", baud=57600)
 
     print("Waiting for heartbeat...")
