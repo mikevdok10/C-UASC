@@ -1368,7 +1368,7 @@ def packageDeliverySafely():
 
 
 def targetLocalization():
-    print("STARTING STARGET LOCALIZATION FUCK")
+    print("STARTING STARGET LOCALIZATION")
     global AUTO_MODE
 
     print("[LOCALIZATION] Starting rectangle target localization.")
